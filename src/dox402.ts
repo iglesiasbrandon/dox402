@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { build402Response, verifyProof } from './x402';
 import { runInference } from './ai';
-import { AI_MODEL, MAX_HISTORY_MESSAGES, PAYMENT_MICRO_USDC } from './constants';
+import { AI_MODEL, MAX_HISTORY_MESSAGES, PAYMENT_MICRO_USDC, RATE_LIMIT_PER_MINUTE } from './constants';
 import { parseSSE, computeCostMicroUSDC } from './billing';
 import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof } from './types';
 
@@ -11,7 +11,29 @@ export class Dox402 extends DurableObject<Env> {
     return `0x${this.ctx.id.name!}`;
   }
 
+  /** Fixed-window rate limit: RATE_LIMIT_PER_MINUTE requests per 60-second window */
+  private async checkRateLimit(): Promise<Response | null> {
+    const now = Math.floor(Date.now() / 1000);
+    const windowStart = now - (now % 60);
+    const key = `rl:${windowStart}`;
+
+    const count = (await this.ctx.storage.get<number>(key)) ?? 0;
+    if (count >= RATE_LIMIT_PER_MINUTE) {
+      return Response.json(
+        { error: 'Rate limit exceeded — try again shortly' },
+        { status: 429, headers: { 'Retry-After': String(60 - (now % 60)) } },
+      );
+    }
+
+    await this.ctx.storage.put(key, count + 1);
+    await this.ctx.storage.delete(`rl:${windowStart - 60}`);
+    return null;
+  }
+
   async fetch(request: Request): Promise<Response> {
+    const limited = await this.checkRateLimit();
+    if (limited) return limited;
+
     const url = new URL(request.url);
     if (url.pathname === '/infer' && request.method === 'POST') {
       return this.handleInfer(request);
