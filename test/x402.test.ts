@@ -165,8 +165,7 @@ describe('verifyProof — Tier 2 (on-chain)', () => {
     mockRPCResponse(null);
     const result = await verifyProof(makeProof(), WALLET, env);
     expect(result.valid).toBe(false);
-    // null RPC result still has default lastError since receipt remains null
-    expect(result.reason).toBeTruthy();
+    expect(result.reason).toContain('not found on-chain');
   });
 
   it('rejects when BASE_RPC_URL is missing', async () => {
@@ -186,8 +185,15 @@ describe('verifyProof — Tier 2 (on-chain)', () => {
   });
 
   it('handles fetch timeout/network failure', async () => {
+    vi.useFakeTimers();
     (globalThis.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network error'));
-    const result = await verifyProof(makeProof(), WALLET, env);
+    const promise = verifyProof(makeProof(), WALLET, env);
+    // Advance past all retry backoff delays (4 retries × up to 3s backoff + 12s timeout each)
+    for (let i = 0; i < 10; i++) {
+      await vi.advanceTimersByTimeAsync(15_000);
+    }
+    const result = await promise;
+    vi.useRealTimers();
     expect(result.valid).toBe(false);
     expect(result.reason).toContain('timed out');
   });

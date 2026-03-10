@@ -4,8 +4,8 @@ import { PaymentRequired, PaymentProof, Env } from './types';
 // ERC-20 Transfer(address indexed from, address indexed to, uint256 value)
 // keccak256("Transfer(address,address,uint256)")
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
-const RPC_TIMEOUT_MS = 8_000;
-const RPC_MAX_RETRIES = 3;
+const RPC_TIMEOUT_MS = 12_000;
+const RPC_MAX_RETRIES = 4;
 
 interface EthLog {
   address: string;
@@ -76,11 +76,12 @@ export async function verifyProof(
 
   // Fetch transaction receipt with timeout + retry on rate-limit
   let receipt: EthReceipt | null = null;
+  let rpcSucceeded = false;
   let lastError = 'RPC request failed or timed out';
 
   for (let attempt = 0; attempt < RPC_MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      // Exponential backoff: 1s, 2s
+      // Exponential backoff: 1s, 2s, 3s
       await new Promise(r => setTimeout(r, attempt * 1000));
     }
     const ac = new AbortController();
@@ -108,20 +109,20 @@ export async function verifyProof(
         continue; // retry
       }
       receipt = json.result;
+      rpcSucceeded = true;
       break; // success
     } catch {
-      // timeout or network error — retry
+      lastError = `RPC request failed or timed out (attempt ${attempt + 1}/${RPC_MAX_RETRIES})`;
     } finally {
       clearTimeout(timer);
     }
   }
 
-  if (receipt === null && lastError) {
+  if (!rpcSucceeded)
     return { valid: false, reason: lastError };
-  }
 
   if (!receipt)
-    return { valid: false, reason: 'transaction not found on-chain (may not be mined yet)' };
+    return { valid: false, reason: 'transaction not found on-chain — it may still be pending. Please retry in a few seconds.' };
 
   if (receipt.status !== '0x1')
     return { valid: false, reason: 'transaction reverted on-chain' };
