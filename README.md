@@ -26,13 +26,21 @@ npm install
 npx wrangler dev          # starts on http://localhost:8787
 ```
 
-In a second terminal, run the 5-phase mock proof test:
+Ensure `.dev.vars` contains:
+```
+PAYMENT_ADDRESS=0x...
+BASE_RPC_URL=https://mainnet.base.org
+MOCK_PAYMENTS=true
+SESSION_SECRET=<any-hex-string>
+```
+
+In a second terminal, run the 9-phase end-to-end test:
 
 ```bash
 npx ts-node --esm test/client.ts
 ```
 
-The client tests all 4 success criteria without any real on-chain payment (mock proof, testnet only).
+The test client generates a random wallet, signs SIWE messages programmatically using `@noble/curves`, authenticates, deposits with a mock proof, runs inference, and verifies balance/history.
 
 ---
 
@@ -41,31 +49,41 @@ The client tests all 4 success criteria without any real on-chain payment (mock 
 ```bash
 # Set production secrets (use wrangler secret, not vars)
 npx wrangler secret put PAYMENT_ADDRESS   # your USDC-receiving wallet
-npx wrangler secret put BASE_RPC_URL      # e.g. https://sepolia.base.org
+npx wrangler secret put BASE_RPC_URL      # e.g. https://mainnet.base.org
+npx wrangler secret put SESSION_SECRET    # generate with: openssl rand -hex 32
 
 npx wrangler deploy
 
 # Verify
 curl https://<worker>.workers.dev/health
-curl 'https://<worker>.workers.dev/balance?wallet=0x<address>'
 ```
 
 ---
 
 ## API
 
-### `POST /infer`
-Body: `{ prompt: string, walletAddress: string, maxTokens?: number }`
+All authenticated endpoints require `Authorization: Bearer <token>` (obtained via SIWE login).
 
-- No credits → `402` + `PAYMENT-REQUIRED: <base64 PaymentRequired>` + JSON body
-- Valid `PAYMENT-SIGNATURE` header → `200` + `text/event-stream` SSE
-- Invalid wallet → `400`
+### Public
+| Endpoint | Description |
+|---|---|
+| `GET /health` | Liveness probe |
+| `GET /payment-info` | Payment address + network details |
 
-### `GET /balance?wallet=0x...`
-Returns: `{ credits, totalPurchased, totalUsed }`
+### Auth (SIWE)
+| Endpoint | Description |
+|---|---|
+| `GET /auth/nonce?wallet=0x...` | Generate one-time nonce |
+| `POST /auth/login` | Verify SIWE signature → JWT |
 
-### `GET /health`
-Returns: `{ status: "ok" }`
+### Authenticated
+| Endpoint | Description |
+|---|---|
+| `POST /infer` | Run inference (post-billed from balance) |
+| `POST /deposit` | Top-up balance with payment proof |
+| `GET /balance` | Credit balance + usage stats |
+| `GET /history` | Conversation messages + metadata |
+| `DELETE /history` | Clear conversation |
 
 ---
 
@@ -83,16 +101,15 @@ Returns: `{ status: "ok" }`
 - **Durable Object** (`Dox402`): one instance per wallet address. Holds credit balance and seen-txHash keys in strongly-consistent storage. All credit updates happen inside `storage.transaction()` to prevent race conditions.
 - **Worker** (`index.ts`): validates wallet address format, routes to the correct DO instance.
 - **Replay prevention**: each payment hash stored as `seen:{txHash} = timestamp` (individual keys — O(1) lookup, no array read).
-- **Verification**: Tier 1 only (structural checks). Tier 2 on-chain RPC verification is marked with TODO comments.
+- **Authentication**: SIWE (EIP-4361) proves wallet ownership; stateless HMAC-SHA256 JWTs for session management.
+- **Verification**: Tier 1 structural checks + Tier 2 on-chain RPC receipt verification via `eth_getTransactionReceipt`.
 
 ---
 
-## Known Limitations (MVP)
+## Known Limitations
 
-| Limitation | Impact | Post-MVP fix |
-|-----------|--------|-------------|
-| Tier 1 verification only | Proof can be fabricated on testnet | Add Base RPC receipt check in `verifyProof()` |
-| No credit refund on AI failure | User loses credit on Workers AI 5xx | Restore credit in catch block, add idempotency key |
-| Wallet address is client-supplied | No proof caller owns the wallet | Require EIP-191 signed request body |
-| Single model, fixed params | No flexibility for callers | Accept model and temperature in request body |
-| No streaming backpressure | Large responses may hit CF limits | Add chunked streaming with heartbeat keepalive |
+| Limitation | Impact | Tracked |
+|-----------|--------|---------|
+| No credit refund on AI failure | User loses credit on Workers AI 5xx | [#1](https://github.com/iglesiasbrandon/dox402/issues/1) |
+| No streaming backpressure | Large responses may hit CF limits | [#2](https://github.com/iglesiasbrandon/dox402/issues/2) |
+| RPC failure rejects valid payments | No graceful fallback on RPC downtime | [#3](https://github.com/iglesiasbrandon/dox402/issues/3) |
