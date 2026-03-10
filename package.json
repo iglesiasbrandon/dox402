@@ -1,0 +1,29 @@
+{
+  "name": "inference-gate",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "test": "npx ts-node --esm test/client.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260307.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.71.0"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1"
+  }
+}

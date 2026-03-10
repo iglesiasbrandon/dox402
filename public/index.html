@@ -1,0 +1,1565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>dox402 · pay-per-use AI</title>
+  <style>
+    :root {
+      --bg:       #181818;
+      --surface:  #202020;
+      --surface2: #272727;
+      --border:   #333333;
+      --text:     #ffffff;
+      --muted:    #c2c2c2;
+      --accent:   #f6821f;
+      --accent-h: #ff9540;
+      --green:    #22c55e;
+      --yellow:   #f59e0b;
+      --red:      #ef4444;
+      --r:        6px;
+      --mono:     ui-monospace, 'SFMono-Regular', 'Fira Code', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { height: 100%; }
+
+    body {
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--muted);
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-size: 15px;
+      line-height: 1.6;
+    }
+
+    /* ── Split layout ──────────────────────────────────────────────────────── */
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      height: 100%;
+    }
+
+    /* ── Left panel ────────────────────────────────────────────────────────── */
+    .left-panel {
+      height: 100%;
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+      padding: 36px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .lp-logo { display: flex; align-items: center; gap: 12px; }
+    .logo-icon {
+      width: 36px; height: 36px;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .lp-name { font-size: 16px; font-weight: 700; letter-spacing: -.01em; color: var(--text); }
+    .lp-name-sub { font-size: 11px; color: var(--muted); margin-top: 1px; font-family: var(--mono); }
+
+    /* README-style sections */
+    .readme { display: flex; flex-direction: column; gap: 20px; }
+    .readme > p { font-size: 13px; color: var(--muted); line-height: 1.65; margin: 0; }
+
+    .readme-section { display: flex; flex-direction: column; gap: 8px; }
+    .readme-h {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      padding-left: 10px;
+      border-left: 2px solid var(--accent);
+      line-height: 1.3;
+    }
+
+    .readme-pre {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 11px 13px;
+      font-family: var(--mono);
+      font-size: 11.5px;
+      color: var(--text);
+      line-height: 1.7;
+      overflow-x: auto;
+      white-space: pre;
+      margin: 0;
+    }
+
+    .readme-ol {
+      margin: 0; padding-left: 20px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .readme-ol li { font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+
+    code {
+      font-family: var(--mono);
+      font-size: 11px;
+      background: rgba(189, 196, 255, 0.12);
+      border: none;
+      border-radius: 3px;
+      padding: 2px 5px;
+      color: var(--text);
+    }
+
+    .readme-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+    .readme-tag {
+      font-family: var(--mono);
+      font-size: 11px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 3px 8px;
+      color: var(--muted);
+    }
+
+    /* Left panel footer */
+    .lp-footer {
+      margin-top: auto;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+    .mermaid { margin-top: 4px; }
+    .mermaid svg { max-width: 100%; border-radius: 6px; }
+    .readme a { color: var(--accent); text-decoration: none; }
+    .readme a:hover { text-decoration: underline; }
+    .readme a code { color: var(--accent); background: rgba(246, 130, 31, 0.12); }
+    .lp-footer a { color: var(--accent); text-decoration: none; }
+    .lp-footer a:hover { text-decoration: underline; }
+
+    /* ── Right panel ───────────────────────────────────────────────────────── */
+    .right-panel {
+      height: 100%;
+      overflow-y: auto;
+      padding: 32px 28px 48px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .rp-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 2px;
+    }
+    .rp-title { font-size: 15px; font-weight: 600; color: var(--text); }
+
+    .balance-pill {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 5px 14px;
+      font-size: 13px;
+      color: var(--muted);
+      display: none;
+      align-items: center;
+      gap: 5px;
+    }
+    .balance-pill .n { color: var(--green); font-weight: 700; font-family: var(--mono); }
+    .pill-num { font-family: var(--mono); font-weight: 700; color: var(--text); }
+    .pill-sep { color: var(--border); padding: 0 1px; }
+    .pill-model-wrap { display: none; align-items: center; gap: 5px; }
+
+    .pill-add-btn {
+      background: none;
+      border: 1.5px solid var(--green);
+      color: var(--green);
+      font-size: 15px;
+      font-weight: 700;
+      width: 20px; height: 20px;
+      padding: 0;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      line-height: 1;
+      margin-left: 3px;
+      cursor: pointer;
+      transition: background .15s, border-color .15s, color .15s, transform .2s;
+    }
+    .pill-add-btn:hover { background: rgba(34,197,94,.15); }
+    .pill-add-btn.open { transform: rotate(45deg); }
+
+    /* ── Top-up inline panel ────────────────────────────────────────────────── */
+    .topup-inline {
+      display: none;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 14px 16px 16px;
+      animation: tuSlide .15s ease;
+    }
+    .topup-inline.on { display: block; }
+    @keyframes tuSlide {
+      from { opacity: 0; transform: translateY(-6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .topup-inline-hd {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .topup-inline-title { font-size: 12px; font-weight: 600; color: var(--text); text-transform: uppercase; letter-spacing: .06em; }
+    .topup-inline-bal { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+    .topup-presets {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+      margin-bottom: 12px;
+    }
+    .topup-preset {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 8px 4px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .topup-preset:hover:not(.sel) { border-color: var(--accent); }
+    .topup-preset.sel {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+    }
+    .topup-preset-cr { font-size: 11px; font-weight: 700; color: var(--text); font-family: var(--mono); }
+    .topup-preset-usd { font-size: 10px; color: var(--muted); margin-top: 1px; }
+    .topup-or {
+      font-size: 10px; color: var(--muted);
+      display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+    }
+    .topup-or::before, .topup-or::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .topup-custom-row {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+    }
+    .topup-custom-row label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .topup-custom-row input { flex: 1; padding: 7px 10px; font-size: 13px; }
+    .topup-actions { display: flex; gap: 8px; }
+    .topup-actions .btn-pay { flex: 1; margin-top: 0; padding: 10px; font-size: 13px; }
+    .topup-actions .btn-ghost { padding: 10px 14px; font-size: 13px; }
+    #topupStatus {
+      font-size: 11px; color: var(--muted); text-align: center;
+      margin-top: 8px; display: none;
+    }
+
+    /* ── Cards ─────────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 18px 20px;
+    }
+
+    .card-title {
+      font-size: 11px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .07em; margin-bottom: 10px;
+    }
+
+    input, textarea {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      color: var(--text);
+      font-size: 14px;
+      padding: 10px 13px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    input:focus, textarea:focus { border-color: var(--accent); }
+    input::placeholder, textarea::placeholder { color: var(--muted); }
+    textarea { resize: vertical; min-height: 96px; font-family: inherit; line-height: 1.5; }
+
+    .model-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .model-label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .model-select {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      color: var(--text);
+      font-size: 13px;
+      padding: 8px 10px;
+      outline: none;
+      cursor: pointer;
+      transition: border-color .15s;
+    }
+    .model-select:focus { border-color: var(--accent); }
+    .model-select option { background: var(--surface2); }
+
+    .row { display: flex; gap: 8px; align-items: center; }
+
+    button {
+      cursor: pointer; border: none; border-radius: var(--r);
+      font-size: 14px; font-weight: 500; padding: 10px 18px;
+      transition: opacity .15s, background .15s; white-space: nowrap;
+    }
+    button:disabled { opacity: .35; cursor: not-allowed; }
+
+    .btn-ghost {
+      background: var(--surface2); color: var(--text);
+      border: 1px solid var(--border); font-size: 13px;
+    }
+    .btn-ghost:hover:not(:disabled) { background: var(--border); }
+
+    .btn-primary {
+      background: var(--accent); color: #181818;
+      width: 100%; padding: 12px; font-size: 15px; margin-top: 10px;
+      border-radius: 9999px; font-weight: 600;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
+
+    .btn-wallet {
+      background: var(--accent); color: #181818;
+      width: 100%; padding: 12px; font-size: 15px;
+      border-radius: 9999px; font-weight: 600;
+    }
+    .btn-wallet:hover:not(:disabled) { background: var(--accent-h); }
+
+    .btn-pay {
+      background: var(--yellow); color: #000;
+      width: 100%; padding: 12px; font-size: 15px; font-weight: 600; margin-top: 10px;
+      border-radius: 9999px;
+    }
+    .btn-pay:hover:not(:disabled) { opacity: .88; }
+
+    /* Wallet card */
+    .addr-box {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r);
+      padding: 10px 13px; font-family: var(--mono); font-size: 12px;
+      word-break: break-all; flex: 1; color: var(--muted);
+    }
+    /* Payment panel */
+    .payment-card {
+      display: none;
+      background: color-mix(in srgb, var(--yellow) 6%, var(--surface));
+      border-color: color-mix(in srgb, var(--yellow) 28%, var(--border));
+    }
+    .payment-card.on { display: block; }
+    .pay-title { font-weight: 600; font-size: 15px; margin-bottom: 14px; }
+    .step-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+
+    #payStatus {
+      font-size: 12px; color: var(--muted); text-align: center;
+      margin-top: 10px; display: none; min-height: 18px;
+    }
+
+    .divider { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+
+    details summary {
+      font-size: 12px; color: var(--muted); cursor: pointer;
+      list-style: none; display: flex; align-items: center; gap: 6px;
+    }
+    details summary::before { content: '▸'; transition: transform .15s; }
+    details[open] summary::before { transform: rotate(90deg); }
+    details .manual-body { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+
+    /* Conversation card */
+    .response-card { display: block; }
+    .response-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .status-dot {
+      display: inline-block; width: 7px; height: 7px;
+      border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: middle;
+    }
+    .status-dot.live { background: var(--green); animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+    .resp-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+    .resp-actions { display: flex; gap: 6px; }
+    @keyframes blink { 50%{opacity:0} }
+
+    /* Conversation thread */
+    .convo-thread {
+      display: flex; flex-direction: column; gap: 18px;
+      max-height: 340px; overflow-y: auto;
+      padding-right: 4px;
+    }
+    .convo-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 28px 0; }
+    .msg { display: flex; flex-direction: column; gap: 3px; }
+    .msg-role {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--muted);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .msg-user .msg-role { color: var(--accent); }
+    .msg-content {
+      font-size: 13.5px; line-height: 1.7; color: var(--text);
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .msg-user .msg-content { color: var(--muted); }
+    .msg-content.cursor::after { content: '▋'; animation: blink 1s step-end infinite; }
+    .msg-info-btn {
+      background: none; border: none; cursor: pointer; padding: 0 3px;
+      color: var(--muted); font-size: 10px; line-height: 1; opacity: 0.55;
+      transition: opacity .15s, color .15s; text-transform: none; letter-spacing: 0;
+    }
+    .msg-info-btn:hover { opacity: 1; color: var(--accent); }
+    .msg-meta {
+      display: none;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; padding: 6px 10px; margin-top: 4px; margin-bottom: 4px;
+      font-family: var(--mono); font-size: 11px; color: var(--muted);
+      flex-direction: column; gap: 2px;
+    }
+    .msg-meta.open { display: flex; }
+    .msg-meta-row { display: flex; justify-content: space-between; gap: 16px; }
+    .msg-meta-cost { color: var(--accent); font-weight: 600; }
+
+    .err {
+      display: none;
+      background: color-mix(in srgb, var(--red) 8%, var(--surface));
+      border: 1px solid color-mix(in srgb, var(--red) 28%, var(--border));
+      border-radius: var(--r); padding: 11px 14px; font-size: 13px;
+      color: color-mix(in srgb, var(--red) 70%, var(--text));
+    }
+    .err.on { display: block; }
+
+    /* ── Mobile ────────────────────────────────────────────────────────────── */
+    @media (max-width: 800px) {
+      html, body { overflow: auto; height: auto; }
+      .split { display: flex; flex-direction: column; height: auto; }
+      .left-panel, .right-panel { height: auto; overflow-y: visible; }
+      .left-panel { padding: 32px 20px; border-right: none; border-bottom: 1px solid var(--border); gap: 28px; }
+      .right-panel { padding: 24px 16px 48px; }
+      .lp-headline { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="split">
+
+  <!-- ── Left: product explainer ──────────────────────────────────────────── -->
+  <div class="left-panel">
+
+    <div class="lp-logo">
+      <div class="logo-icon">
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+              <feGaussianBlur stdDeviation="0.9" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+          <!-- Dark background -->
+          <rect width="36" height="36" rx="8" fill="#181818"/>
+          <!-- Isometric cube — subtle face fills for depth -->
+          <!-- Top face -->
+          <polygon points="18,8 27,13 18,18 9,13" fill="#2a1a08"/>
+          <!-- Right face -->
+          <polygon points="27,13 27,23 18,28 18,18" fill="#231508"/>
+          <!-- Left face -->
+          <polygon points="9,13 18,18 18,28 9,23" fill="#1a1008"/>
+          <!-- Outer edges (hex outline) — bright orange with glow -->
+          <g stroke="#ff9540" stroke-width="1.5" stroke-linecap="round" filter="url(#glow)">
+            <line x1="18" y1="8"  x2="27" y2="13"/>
+            <line x1="27" y1="13" x2="27" y2="23"/>
+            <line x1="27" y1="23" x2="18" y2="28"/>
+            <line x1="18" y1="28" x2="9"  y2="23"/>
+            <line x1="9"  y1="23" x2="9"  y2="13"/>
+            <line x1="9"  y1="13" x2="18" y2="8" />
+          </g>
+          <!-- Inner edges from center — dimmer orange -->
+          <g stroke="#f6821f" stroke-width="1" stroke-linecap="round" filter="url(#glow)">
+            <line x1="18" y1="18" x2="27" y2="13"/>
+            <line x1="18" y1="18" x2="9"  y2="13"/>
+            <line x1="18" y1="18" x2="18" y2="28"/>
+          </g>
+          <!-- Vertex solder dots -->
+          <g fill="#ffb870" filter="url(#glow)">
+            <circle cx="18" cy="8"  r="1.6"/>
+            <circle cx="27" cy="13" r="1.2"/>
+            <circle cx="27" cy="23" r="1.2"/>
+            <circle cx="18" cy="28" r="1.6"/>
+            <circle cx="9"  cy="23" r="1.2"/>
+            <circle cx="9"  cy="13" r="1.2"/>
+            <circle cx="18" cy="18" r="1.1"/>
+          </g>
+        </svg>
+      </div>
+      <div>
+        <div class="lp-name">dox402</div>
+        <div class="lp-name-sub">pay-per-use AI inference</div>
+      </div>
+    </div>
+
+    <div class="readme">
+
+      <p>Pay-per-use AI inference via the x402 payment protocol. No signup, no API key — sign in with your wallet via <a href="https://eips.ethereum.org/EIPS/eip-4361" target="_blank">EIP-4361 (SIWE)</a> to prove ownership, then pay and prompt.</p>
+
+      <div class="readme-section">
+        <div class="readme-h">Why Durable Objects</div>
+        <p style="font-size:13px;color:var(--muted);line-height:1.65;margin:0">
+          Most payment-gated APIs bolt a database onto a stateless server — Postgres for balances, Redis for rate-limiting, a separate auth layer for identity. Durable Objects collapse all of that into a single primitive.
+        </p>
+        <p style="font-size:13px;color:var(--muted);line-height:1.65;margin:0">
+          Each wallet is routed to its own DO instance via <a href="https://developers.cloudflare.com/durable-objects/api/namespace/" target="_blank"><code>idFromName</code></a>. That instance owns its µUSDC balance exclusively — no shared state, no contention, no double-spend. Replay prevention uses <a href="https://developers.cloudflare.com/durable-objects/api/transactional-storage-api/" target="_blank"><code>storage.transaction()</code></a> to atomically check a <code>seen:{txHash}</code> key and top up the balance in one operation, at the edge, with no external infrastructure.
+        </p>
+      </div>
+
+      <div class="readme-section">
+        <div class="readme-h">Conversation memory</div>
+        <p style="font-size:13px;color:var(--muted);line-height:1.65;margin:0">
+          Each wallet's DO instance stores the conversation as a <code>history</code> key. On every request, the full message array is sent to the model — so follow-up questions and multi-turn reasoning work without the client managing any state. The reply is captured and saved via <a href="https://developers.cloudflare.com/workers/runtime-apis/context/#waituntil" target="_blank"><code>ctx.waitUntil()</code></a> after the stream, adding zero latency. Each assistant message stores usage metadata (cost, model) so details persist across reloads. History is capped at 20 messages and tied to the wallet, not the browser.
+        </p>
+      </div>
+
+      <div class="readme-section">
+        <div class="readme-h">Request flow</div>
+        <div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant W as Worker
+    participant DO as Durable Object
+    participant S as Storage
+    participant AI as Workers AI
+    C->>W: GET /auth/nonce
+    W->>DO: generate nonce
+    DO-->>C: { nonce }
+    C->>W: POST /auth/login {message, sig}
+    W->>W: recover address (EIP-191)
+    W->>DO: verify nonce (one-time)
+    W-->>C: { token, expiresAt }
+    C->>W: POST /infer + Bearer token
+    W->>W: verify HMAC session
+    W->>DO: idFromName(wallet)
+    DO->>S: get balance + history
+    DO->>AI: messages[...history, prompt]
+    AI-->>C: SSE stream
+    DO-->>S: waitUntil → save reply + meta
+        </div>
+      </div>
+
+      <div class="readme-section">
+        <div class="readme-h">Endpoints</div>
+        <pre class="readme-pre"><strong>Public</strong>
+GET    /health        liveness probe
+GET    /payment-info  payment address + network details
+
+<strong>Auth (SIWE)</strong>
+GET    /auth/nonce    generate one-time nonce
+POST   /auth/login    verify signature → JWT
+
+<strong>Authenticated (Bearer token)</strong>
+POST   /infer     run inference (post-billed)
+POST   /deposit   top-up balance without inference
+GET    /balance   credit balance + usage stats
+GET    /history   conversation messages + meta
+DELETE /history   clear conversation</pre>
+      </div>
+
+      <div class="readme-section">
+        <div class="readme-h">Payment flow</div>
+        <ol class="readme-ol">
+          <li>Sign in with wallet (SIWE) → receive session JWT</li>
+          <li><code>POST /infer</code> with <code>0</code> balance → <code>402</code> + <code>PAYMENT-REQUIRED</code> header</li>
+          <li>Send USDC on Base Mainnet → <code>POST /deposit</code> with proof → balance topped up</li>
+          <li>Subsequent <code>POST /infer</code> requests deduct from balance automatically</li>
+        </ol>
+      </div>
+
+      <div class="readme-section">
+        <div class="readme-h">Pricing</div>
+        <pre class="readme-pre">0.001 USDC → 1,000 credits (µUSDC)
+Billed at actual token usage · 1 neuron ≈ 0.011 credits
+
+  Llama 3.1 8B     ~1–3 credits/request
+  Llama 3.3 70B    ~2–4 credits/request
+  Gemma 3 12B      ~1–3 credits/request
+  Mistral 7B       ~1 credit/request
+  DeepSeek R1 32B  ~2–8 credits/request</pre>
+      </div>
+
+      <div class="readme-section">
+        <div class="readme-h">Stack</div>
+        <div class="readme-tags">
+          <span class="readme-tag">cloudflare-workers</span>
+          <span class="readme-tag">durable-objects</span>
+          <span class="readme-tag">workers-ai</span>
+          <span class="readme-tag">x402</span>
+          <span class="readme-tag">siwe</span>
+          <span class="readme-tag">base-mainnet</span>
+          <span class="readme-tag">usdc</span>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="lp-footer">
+      <a href="https://www.x402.org" target="_blank">x402 protocol</a> ·
+      <a href="https://developers.cloudflare.com/durable-objects/" target="_blank">Durable Objects</a> ·
+      <a href="https://basescan.org" target="_blank">Basescan</a>
+    </div>
+
+  </div>
+
+  <!-- ── Right: the app ───────────────────────────────────────────────────── -->
+  <div class="right-panel">
+
+    <div class="rp-top">
+      <div class="rp-title">Try it</div>
+      <div class="balance-pill" id="pill">
+        <span class="n" id="pillN">—</span>
+        <button class="pill-add-btn" id="pillAddBtn" onclick="toggleTopUp()" title="Add credits">+</button>
+      </div>
+    </div>
+
+    <!-- Inline top-up panel (expands below the pill when + is clicked) -->
+    <div class="topup-inline" id="topupInline">
+      <div class="topup-inline-hd">
+        <span class="topup-inline-title">Add Credits</span>
+        <span class="topup-inline-bal" id="topupBal">—</span>
+      </div>
+      <div class="topup-presets">
+        <div class="topup-preset sel" data-micro="1000" onclick="selectTopupPreset(this)">
+          <div class="topup-preset-cr">1,000</div>
+          <div class="topup-preset-usd">$0.001</div>
+        </div>
+        <div class="topup-preset" data-micro="5000" onclick="selectTopupPreset(this)">
+          <div class="topup-preset-cr">5,000</div>
+          <div class="topup-preset-usd">$0.005</div>
+        </div>
+        <div class="topup-preset" data-micro="10000" onclick="selectTopupPreset(this)">
+          <div class="topup-preset-cr">10,000</div>
+          <div class="topup-preset-usd">$0.01</div>
+        </div>
+        <div class="topup-preset" data-micro="50000" onclick="selectTopupPreset(this)">
+          <div class="topup-preset-cr">50,000</div>
+          <div class="topup-preset-usd">$0.05</div>
+        </div>
+      </div>
+      <div class="topup-or">or enter custom amount</div>
+      <div class="topup-custom-row">
+        <label>USDC</label>
+        <input id="topupCustom" type="number" min="0.001" step="0.001"
+               placeholder="e.g. 0.025" oninput="onTopupCustomInput()" />
+      </div>
+      <div class="topup-actions">
+        <button class="btn-pay" id="topupBtn" onclick="topUpWithWallet()">Add Credits →</button>
+        <button class="btn-ghost" onclick="hideTopUp()">Cancel</button>
+      </div>
+      <div id="topupStatus"></div>
+    </div>
+
+    <!-- Wallet -->
+    <div class="card">
+      <div class="card-title">Wallet</div>
+
+      <!-- Connected state -->
+      <div id="walletConnected" style="display:none">
+        <div class="row">
+          <div class="addr-box" id="connectedAddr"></div>
+          <button class="btn-ghost" onclick="disconnect()">Disconnect</button>
+        </div>
+      </div>
+
+      <!-- Disconnected state -->
+      <div id="walletDisconnected">
+        <button class="btn-wallet" id="connectBtn" onclick="connectInjected()">
+          Connect Wallet
+        </button>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div class="err" id="err"></div>
+
+    <!-- Payment panel -->
+    <div class="card payment-card" id="payCard">
+      <div class="pay-title">💸 Payment required</div>
+      <div class="step-label">Send <strong>0.001 USDC</strong> on Base Mainnet to:</div>
+      <div class="row" style="margin-bottom: 4px">
+        <div class="addr-box" id="payAddr">—</div>
+        <button class="btn-ghost" onclick="copyAddr()">Copy</button>
+      </div>
+
+      <!-- Primary: one-click wallet payment -->
+      <button class="btn-pay" id="payWalletBtn" onclick="payWithWallet()">
+        Pay with Wallet →
+      </button>
+      <div id="payStatus"></div>
+
+      <!-- Fallback: paste txHash manually -->
+      <hr class="divider" />
+      <details id="manualDetails">
+        <summary>Paid from a different wallet? Enter txHash manually</summary>
+        <div class="manual-body">
+          <input id="txIn" type="text" placeholder="0x… (64-hex transaction hash)"
+                 spellcheck="false" style="font-family:var(--mono);font-size:12px" />
+          <button class="btn-ghost" onclick="retryWithTxHash()">Submit →</button>
+        </div>
+      </details>
+    </div>
+
+    <!-- Prompt -->
+    <div class="card">
+      <div class="card-title">
+        Prompt
+        <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:4px">(Ctrl+Enter to send)</span>
+      </div>
+      <div class="model-row">
+        <span class="model-label">Model</span>
+        <select id="modelSelect" class="model-select">
+          <option value="@cf/meta/llama-3.1-8b-instruct">Llama 3.1 8B · fast</option>
+          <option value="@cf/meta/llama-3.3-70b-instruct-fp8-fast">Llama 3.3 70B · smart</option>
+          <option value="@cf/google/gemma-3-12b-it">Gemma 3 12B</option>
+          <option value="@cf/mistral/mistral-7b-instruct-v0.2">Mistral 7B</option>
+          <option value="@cf/deepseek-ai/deepseek-r1-distill-qwen-32b">DeepSeek R1 32B</option>
+        </select>
+      </div>
+      <textarea id="promptIn" placeholder="Ask anything…" rows="4"></textarea>
+      <!-- Live token counter + estimate toggle -->
+      <div id="estRow" style="display:none;margin-top:7px;align-items:center;justify-content:space-between">
+        <span id="estTokens" style="font-size:11px;color:var(--muted);font-family:var(--mono)"></span>
+        <button class="btn-ghost" style="font-size:11px;padding:4px 10px" onclick="toggleEstimate()">Estimate cost →</button>
+      </div>
+      <!-- Estimate breakdown card -->
+      <div class="card" id="estCard" style="display:none;margin-top:10px;padding:14px 16px">
+        <div class="card-title" style="margin-bottom:10px">Cost Estimate</div>
+        <div id="estBody" style="font-family:var(--mono);font-size:12px;color:var(--muted);line-height:2.1"></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:10px;opacity:0.55">output range assumes 400–2,000 chars</div>
+      </div>
+      <button class="btn-primary" id="sendBtn" onclick="submit()">Send →</button>
+    </div>
+
+    <!-- Conversation -->
+    <div class="card response-card" id="respCard">
+      <div class="response-header">
+        <div class="resp-label">
+          <span class="status-dot" id="dot"></span>
+          <span id="statusTxt">Conversation History</span>
+        </div>
+        <div class="resp-actions">
+          <button class="btn-ghost" onclick="copyLast()">Copy</button>
+          <button class="btn-ghost" onclick="clearHistory()">Clear</button>
+        </div>
+      </div>
+      <div class="convo-thread" id="convoThread">
+        <div class="convo-empty" id="convoEmpty">No messages yet. Ask anything to begin.</div>
+      </div>
+    </div>
+
+  </div><!-- end right-panel -->
+
+</div><!-- end split -->
+
+<!-- ── Top-up modal overlay ─────────────────────────────────────────────── -->
+
+<script>
+  // ── Constants ──────────────────────────────────────────────────────────────
+  const BASE_CHAIN_ID  = '0x2105'; // 8453
+  const USDC_MAINNET   = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+
+  // Neurons per 1M tokens (from Cloudflare Workers AI pricing docs)
+  const NEURON_RATES = {
+    '@cf/meta/llama-3.1-8b-instruct':              { in: 25608,  out: 75147  },
+    '@cf/meta/llama-3.3-70b-instruct-fp8-fast':    { in: 26668,  out: 204805 },
+    '@cf/google/gemma-3-12b-it':                   { in: 25608,  out: 75147  },
+    '@cf/mistral/mistral-7b-instruct-v0.2':        { in: 10000,  out: 17300  },
+    '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b': { in: 45170,  out: 443756 },
+  };
+
+  function countChars(text) { return (text || '').length; }
+
+  function getHistoryChars() {
+    return Array.from(document.querySelectorAll('.msg-content'))
+      .reduce((sum, el) => sum + countChars(el.textContent), 0);
+  }
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let wallet         = localStorage.getItem('ig_wallet') || '';
+  let sessionToken   = localStorage.getItem('ig_session_token') || '';
+  let paymentDetails = null;
+  let pendingPrompt  = '';
+  let pendingModel   = '';
+  let estOpen        = false;
+
+  // ── Session helpers ─────────────────────────────────────────────────────────
+  function isSessionValid() {
+    if (!sessionToken) return false;
+    const exp = localStorage.getItem('ig_session_expires');
+    if (!exp) return false;
+    return Date.now() < parseInt(exp, 10) * 1000;
+  }
+
+  function authHeaders() {
+    const h = {};
+    if (sessionToken) h['Authorization'] = 'Bearer ' + sessionToken;
+    return h;
+  }
+
+  function clearSession() {
+    sessionToken = '';
+    localStorage.removeItem('ig_session_token');
+    localStorage.removeItem('ig_session_expires');
+  }
+
+  // ── Init ───────────────────────────────────────────────────────────────────
+  (async () => {
+    if (wallet && isSessionValid()) {
+      showConnected(wallet);
+      // Run sequentially so fetchBalance can't race-clear session before loadHistory
+      await fetchBalance();
+      if (wallet && sessionToken) {
+        await loadHistory();
+      }
+    } else if (wallet && !isSessionValid()) {
+      clearSession();
+      wallet = '';
+      localStorage.removeItem('ig_wallet');
+    }
+  })();
+
+  // Hide "Pay with Wallet" if no injected provider
+  if (!window.ethereum) {
+    document.getElementById('payWalletBtn').style.display = 'none';
+  }
+
+  document.getElementById('promptIn').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit();
+  });
+  document.getElementById('promptIn').addEventListener('input', updateEstimate);
+  document.getElementById('modelSelect').addEventListener('change', updateEstimate);
+
+  // ── Wallet ─────────────────────────────────────────────────────────────────
+  async function connectInjected() {
+    if (!window.ethereum) {
+      showErr('No injected wallet found. Install MetaMask or another browser wallet.');
+      return;
+    }
+    hideErr();
+    try {
+      // 1. Get wallet address
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      const addr = accounts[0];
+
+      // 2. Fetch nonce from server
+      const nonceRes = await fetch(`/auth/nonce?wallet=${addr}`);
+      if (!nonceRes.ok) throw new Error('Failed to get nonce from server');
+      const { nonce } = await nonceRes.json();
+
+      // 3. Build EIP-4361 SIWE message
+      const domain = window.location.host;
+      const origin = window.location.origin;
+      const issuedAt = new Date().toISOString();
+      const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+      const message = [
+        `${domain} wants you to sign in with your Ethereum account:`,
+        addr,
+        '',
+        'Sign in to dox402 inference gateway',
+        '',
+        `URI: ${origin}`,
+        `Version: 1`,
+        `Chain ID: 8453`,
+        `Nonce: ${nonce}`,
+        `Issued At: ${issuedAt}`,
+        `Expiration Time: ${expirationTime}`,
+      ].join('\n');
+
+      // 4. Request personal_sign from wallet
+      const signature = await window.ethereum.request({
+        method: 'personal_sign',
+        params: [message, addr],
+      });
+
+      // 5. Send to /auth/login
+      const loginRes = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, signature }),
+      });
+      if (!loginRes.ok) {
+        const err = await loginRes.json().catch(() => ({}));
+        throw new Error(err.error || 'Login failed');
+      }
+      const { token, expiresAt } = await loginRes.json();
+
+      // 6. Store session
+      sessionToken = token;
+      localStorage.setItem('ig_session_token', token);
+      localStorage.setItem('ig_session_expires', String(expiresAt));
+
+      // 7. Continue with existing wallet flow
+      setWallet(addr);
+    } catch (e) {
+      if (e.code === 4001) {
+        showErr('Wallet connection cancelled.');
+      } else {
+        showErr('Sign-in failed: ' + (e.message || String(e)));
+      }
+    }
+  }
+
+  function setWallet(addr) {
+    wallet = addr;
+    localStorage.setItem('ig_wallet', wallet);
+    hideErr();
+    showConnected(wallet);
+    fetchBalance();
+    loadHistory();
+  }
+
+  function disconnect() {
+    wallet = '';
+    localStorage.removeItem('ig_wallet');
+    clearSession();
+    hideErr();
+    document.getElementById('walletConnected').style.display = 'none';
+    document.getElementById('walletDisconnected').style.display = 'block';
+    document.getElementById('pill').style.display = 'none';
+    document.getElementById('pillN').textContent = '—';
+    hideTopUp();
+    document.getElementById('estRow').style.display = 'none';
+    document.getElementById('estCard').style.display = 'none';
+    estOpen = false;
+    const thread = document.getElementById('convoThread');
+    thread.innerHTML = '<div class="convo-empty" id="convoEmpty">No messages yet. Ask anything to begin.</div>';
+    document.getElementById('statusTxt').textContent = 'Conversation History';
+    document.getElementById('dot').classList.remove('live');
+  }
+
+  function showConnected(addr) {
+    document.getElementById('connectedAddr').textContent = addr;
+    document.getElementById('walletConnected').style.display = 'block';
+    document.getElementById('walletDisconnected').style.display = 'none';
+    document.getElementById('pill').style.display = 'flex';
+    document.getElementById('estRow').style.display = 'flex';
+    updateEstimate();
+  }
+
+  // ── Balance ────────────────────────────────────────────────────────────────
+  const fmtBalance = µ => (+(µ ?? 0)).toLocaleString() + ' credits';
+
+  // Update pill from X-Balance header (pre-deduction); schedule a refresh for actual post-deduction value.
+  function updateBalanceFromResponse(res) {
+    const raw = res.headers.get('X-Balance');
+    if (raw !== null) document.getElementById('pillN').textContent = fmtBalance(parseInt(raw, 10));
+    setTimeout(fetchBalance, 1500);
+  }
+
+  async function fetchBalance() {
+    if (!wallet || !sessionToken) return null;
+    try {
+      const res = await fetch('/balance', { cache: 'no-store', headers: authHeaders() });
+      if (res.status === 401) { handleSessionExpired(); return null; }
+      if (!res.ok) return null;
+      const d = await res.json();
+      const bal = +(d?.balance ?? 0);
+      document.getElementById('pillN').textContent = fmtBalance(bal);
+      return bal;
+    } catch (_) { return null; }
+  }
+
+  function handleSessionExpired() {
+    clearSession();
+    wallet = '';
+    localStorage.removeItem('ig_wallet');
+    disconnect();
+    showErr('Session expired — please sign in again.');
+  }
+
+  // ── Credit estimation ──────────────────────────────────────────────────────
+  function updateEstimate() {
+    const prompt      = document.getElementById('promptIn').value;
+    const promptChars = countChars(prompt);
+    const histChars   = getHistoryChars();
+    const totalChars  = promptChars + histChars;
+    const histMsgs    = document.querySelectorAll('.msg').length;
+
+    // Live counter text (chars)
+    const label = histMsgs > 0
+      ? `~${totalChars.toLocaleString()} chars input (prompt + ${histMsgs} history msg${histMsgs !== 1 ? 's' : ''})`
+      : `~${totalChars.toLocaleString()} chars input`;
+    document.getElementById('estTokens').textContent = label;
+
+    // Credit calculation: chars ÷ 4 ≈ tokens for neuron rate lookup
+    const totalInToks = Math.ceil(totalChars / 4);
+    const model  = document.getElementById('modelSelect').value;
+    const rates  = NEURON_RATES[model] || NEURON_RATES['@cf/meta/llama-3.1-8b-instruct'];
+    const outMinToks = 100, outMaxToks = 500;
+
+    const neuronsMin  = (totalInToks * rates.in + outMinToks * rates.out) / 1e6;
+    const neuronsMax  = (totalInToks * rates.in + outMaxToks * rates.out) / 1e6;
+    const costMinCr   = Math.max(1, Math.ceil(neuronsMin * 0.011));
+    const costMaxCr   = Math.max(1, Math.ceil(neuronsMax * 0.011));
+
+    // Estimate card body (only if open)
+    if (!estOpen) return;
+
+    document.getElementById('estBody').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr auto;gap:4px 24px;align-items:baseline">
+        <span style="color:var(--muted)">Prompt</span>             <span style="color:var(--text)">${promptChars.toLocaleString()} chars</span>
+        <span style="color:var(--muted)">History</span>            <span style="color:var(--text)">${histChars.toLocaleString()} chars</span>
+        <span style="color:var(--muted)">Total input</span>        <span style="color:var(--text);font-weight:600">~${totalChars.toLocaleString()} chars</span>
+        <span style="color:var(--border);grid-column:1/-1;border-top:1px solid var(--border);margin:4px 0"></span>
+        <span style="color:var(--muted)">Output (estimated)</span> <span style="color:var(--muted)">${(outMinToks*4).toLocaleString()}–${(outMaxToks*4).toLocaleString()} chars</span>
+        <span style="color:var(--muted)">Credits</span>            <span style="color:var(--accent)">~${costMinCr === costMaxCr ? costMinCr : costMinCr + '–' + costMaxCr}</span>
+      </div>`;
+  }
+
+  function toggleEstimate() {
+    estOpen = !estOpen;
+    document.getElementById('estCard').style.display = estOpen ? 'block' : 'none';
+    if (estOpen) updateEstimate();
+  }
+
+  // ── Submit ─────────────────────────────────────────────────────────────────
+  async function submit() {
+    const prompt = document.getElementById('promptIn').value.trim();
+    if (!prompt) return;
+    if (!wallet || !isSessionValid()) { showErr('Connect your wallet and sign in first.'); return; }
+    pendingPrompt = prompt;
+    pendingModel  = document.getElementById('modelSelect').value;
+    document.getElementById('promptIn').value = '';
+    hideErr();
+    setBusy(true);
+    await doInfer(prompt, null, pendingModel);
+  }
+
+  // ── One-click wallet payment ───────────────────────────────────────────────
+  async function payWithWallet() {
+    if (!window.ethereum) return;
+    const btn = document.getElementById('payWalletBtn');
+    btn.disabled = true;
+    setPayStatus('');
+
+    try {
+      // 1. Switch to Base Mainnet
+      setPayStatus('Switching to Base Mainnet…');
+      try {
+        await window.ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: BASE_CHAIN_ID }],
+        });
+      } catch (e) {
+        if (e.code === 4902) {
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: BASE_CHAIN_ID,
+              chainName: 'Base',
+              nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+              rpcUrls: ['https://mainnet.base.org'],
+              blockExplorerUrls: ['https://basescan.org'],
+            }],
+          });
+        } else { throw e; }
+      }
+
+      // 2. Build ERC-20 transfer(address,uint256) calldata
+      const amount = BigInt(paymentDetails?.amount ?? '1000');
+      const to     = paymentDetails.paymentAddress;
+      const data   = '0xa9059cbb'
+        + to.slice(2).padStart(64, '0')
+        + amount.toString(16).padStart(64, '0');
+
+      // 3. Get the actual connected account (may differ from stale wallet state)
+      const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+      const actualFrom = (accounts[0] || wallet).toLowerCase();
+      if (actualFrom !== wallet.toLowerCase()) {
+        // Sync wallet state with actual connected account
+        setWallet(accounts[0]);
+      }
+
+      // 4. Send transaction — wallet popup appears here
+      setPayStatus('Approve the transaction in your wallet…');
+      const txHash = await window.ethereum.request({
+        method: 'eth_sendTransaction',
+        params: [{ from: actualFrom, to: USDC_MAINNET, data }],
+      });
+
+      // 5. Wait for on-chain confirmation
+      setPayStatus('Waiting for confirmation on Base…');
+      const receipt = await waitForReceipt(txHash);
+      if (!receipt || receipt.status !== '0x1') throw new Error('Transaction reverted');
+
+      // 6. Auto-submit proof — no user input needed
+      setPayStatus('Confirmed! Crediting account…');
+      hidePayCard();
+      const proof = {
+        txHash,
+        from:      actualFrom,
+        amount:    String(amount),
+        timestamp: Math.floor(Date.now() / 1000),
+        signature: '0x',
+      };
+      setBusy(true);
+      const proofHeader = btoa(JSON.stringify(proof));
+      // Pass proof directly to doInfer and catch 402-after-payment as an error
+      const inferRes = await fetch('/infer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'PAYMENT-SIGNATURE': proofHeader, ...authHeaders() },
+        body: JSON.stringify({ prompt: pendingPrompt, walletAddress: actualFrom, model: pendingModel }),
+      });
+      if (inferRes.status === 402) {
+        const d = await inferRes.json();
+        const reason = d.error || 'proof rejected by server';
+        throw new Error(`Payment verification failed: ${reason}. Your USDC was sent — contact support with txHash: ${txHash}`);
+      }
+      if (!inferRes.ok) {
+        const b = await inferRes.json().catch(() => ({}));
+        throw new Error(b.error || `Server error ${inferRes.status}`);
+      }
+      // Append user message, create assistant bubble, stream into it
+      appendMessage('user', pendingPrompt);
+      const assistantEl = appendMessage('assistant', '');
+      const assistantContent = assistantEl.querySelector('.msg-content');
+      const thread = document.getElementById('convoThread');
+      setStreaming(true, assistantContent);
+      setBusy(true);
+      const reader = inferRes.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      let capturedUsage = null;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const d = line.slice(6).trim();
+          if (d === '[DONE]') continue;
+          try { const p = JSON.parse(d); if (p.response) { assistantContent.textContent += p.response; thread.scrollTop = thread.scrollHeight; } if (p.usage) capturedUsage = p.usage; } catch (_) {}
+        }
+      }
+      setStreaming(false, assistantContent);
+      setBusy(false);
+      const preBalPay = parseInt(inferRes.headers.get('X-Balance') ?? '0', 10);
+      attachUsageInfo(assistantEl, { model: pendingModel, preBalance: preBalPay });
+      updateBalanceFromResponse(inferRes);
+      return; // skip the doInfer call below
+
+    } catch (e) {
+      if (e.code === 4001) {
+        setPayStatus('Transaction rejected.');
+      } else {
+        showErr('Payment failed: ' + e.message);
+      }
+      btn.disabled = false;
+    }
+  }
+
+  async function waitForReceipt(txHash, maxMs = 90_000) {
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+      const receipt = await window.ethereum.request({
+        method: 'eth_getTransactionReceipt',
+        params: [txHash],
+      });
+      if (receipt) return receipt;
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    throw new Error('Transaction not confirmed within 90 seconds');
+  }
+
+  // ── Manual txHash fallback ─────────────────────────────────────────────────
+  async function retryWithTxHash() {
+    const txHash = document.getElementById('txIn').value.trim();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+      showErr('Enter the full 32-byte transaction hash (0x + 64 hex chars).');
+      return;
+    }
+    hideErr();
+    hidePayCard();
+    setBusy(true);
+    const proof = {
+      txHash,
+      from:      wallet,
+      amount:    paymentDetails?.amount ?? '1000',
+      timestamp: Math.floor(Date.now() / 1000),
+      signature: '0x',
+    };
+    await doInfer(pendingPrompt, btoa(JSON.stringify(proof)), pendingModel);
+  }
+
+  // ── Core inference ─────────────────────────────────────────────────────────
+  async function doInfer(prompt, proofHeader, model) {
+    try {
+      const headers = { 'Content-Type': 'application/json', ...authHeaders() };
+      if (proofHeader) headers['PAYMENT-SIGNATURE'] = proofHeader;
+
+      const res = await fetch('/infer', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ prompt, walletAddress: wallet, model }),
+      });
+
+      if (res.status === 401) {
+        handleSessionExpired();
+        setBusy(false);
+        return;
+      }
+
+      if (res.status === 402) {
+        paymentDetails = await res.json();
+        showPayCard(paymentDetails);
+        setBusy(false);
+        return;
+      }
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        showErr(body.error || `Server error ${res.status}`);
+        setBusy(false);
+        return;
+      }
+
+      // Append user message, create empty assistant bubble, stream into it
+      appendMessage('user', prompt);
+      const assistantEl = appendMessage('assistant', '');
+      const assistantContent = assistantEl.querySelector('.msg-content');
+      const thread = document.getElementById('convoThread');
+      setStreaming(true, assistantContent);
+
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      let capturedUsage = null;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue;
+          try {
+            const p = JSON.parse(data);
+            if (p.response) { assistantContent.textContent += p.response; thread.scrollTop = thread.scrollHeight; }
+            if (p.usage) capturedUsage = p.usage;
+          } catch (_) {}
+        }
+      }
+
+      setStreaming(false, assistantContent);
+      setBusy(false);
+      const preBalInfer = parseInt(res.headers.get('X-Balance') ?? '0', 10);
+      attachUsageInfo(assistantEl, { model, preBalance: preBalInfer });
+      updateBalanceFromResponse(res);
+
+    } catch (e) {
+      showErr('Request failed: ' + e.message);
+      setStreaming(false);
+      setBusy(false);
+    }
+  }
+
+  // ── UI helpers ─────────────────────────────────────────────────────────────
+  function showPayCard(d) {
+    document.getElementById('payAddr').textContent = d.paymentAddress;
+    document.getElementById('payWalletBtn').disabled = false;
+    setPayStatus('');
+    document.getElementById('payCard').classList.add('on');
+  }
+
+  function hidePayCard() {
+    document.getElementById('payCard').classList.remove('on');
+    document.getElementById('txIn').value = '';
+  }
+
+  function setPayStatus(msg) {
+    const el = document.getElementById('payStatus');
+    el.textContent = msg;
+    el.style.display = msg ? 'block' : 'none';
+  }
+
+  // ── Top-up inline panel ────────────────────────────────────────────────────
+  let topupMicro = 1000; // µUSDC selected; default = 1,000 credits (0.001 USDC)
+
+  function toggleTopUp() {
+    const panel = document.getElementById('topupInline');
+    const btn   = document.getElementById('pillAddBtn');
+    if (panel.classList.contains('on')) {
+      hideTopUp();
+    } else {
+      // Reset state
+      topupMicro = 1000;
+      document.querySelectorAll('.topup-preset').forEach((p, i) => p.classList.toggle('sel', i === 0));
+      document.getElementById('topupCustom').value = '';
+      document.getElementById('topupBal').textContent = document.getElementById('pillN').textContent;
+      document.getElementById('topupStatus').textContent = '';
+      document.getElementById('topupStatus').style.display = 'none';
+      document.getElementById('topupBtn').disabled = false;
+      panel.classList.add('on');
+      btn.classList.add('open');
+    }
+  }
+
+  function hideTopUp() {
+    document.getElementById('topupInline').classList.remove('on');
+    document.getElementById('pillAddBtn').classList.remove('open');
+  }
+
+  function selectTopupPreset(el) {
+    document.querySelectorAll('.topup-preset').forEach(p => p.classList.remove('sel'));
+    el.classList.add('sel');
+    topupMicro = parseInt(el.dataset.micro, 10);
+    document.getElementById('topupCustom').value = '';
+  }
+
+  function onTopupCustomInput() {
+    const val = parseFloat(document.getElementById('topupCustom').value);
+    if (val > 0) {
+      topupMicro = Math.round(val * 1_000_000); // USDC → µUSDC (1 USDC = 1,000,000 µUSDC)
+      document.querySelectorAll('.topup-preset').forEach(p => p.classList.remove('sel'));
+    }
+  }
+
+  function setTopupStatus(msg) {
+    const el = document.getElementById('topupStatus');
+    el.textContent = msg;
+    el.style.display = msg ? 'block' : 'none';
+  }
+
+  async function topUpWithWallet() {
+    if (!wallet || !window.ethereum) return;
+    if (topupMicro < 1000) { setTopupStatus('Minimum top-up is 1,000 credits (0.001 USDC).'); return; }
+    const btn = document.getElementById('topupBtn');
+    btn.disabled = true;
+
+    try {
+      // Fetch payment address from server
+      const infoRes = await fetch('/payment-info', { cache: 'no-store' });
+      if (!infoRes.ok) throw new Error('Could not load payment info');
+      const info = await infoRes.json();
+      const paymentAddress = info.paymentAddress;
+
+      // Switch to Base Mainnet
+      setTopupStatus('Switching to Base Mainnet…');
+      try {
+        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: BASE_CHAIN_ID }] });
+      } catch (e) {
+        if (e.code === 4902) {
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{ chainId: BASE_CHAIN_ID, chainName: 'Base',
+              nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+              rpcUrls: ['https://mainnet.base.org'],
+              blockExplorerUrls: ['https://basescan.org'] }],
+          });
+        } else { throw e; }
+      }
+
+      // Build ERC-20 transfer(address,uint256) calldata
+      const amount = BigInt(topupMicro);
+      const data = '0xa9059cbb'
+        + paymentAddress.slice(2).padStart(64, '0')
+        + amount.toString(16).padStart(64, '0');
+
+      const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+      const actualFrom = (accounts[0] || wallet).toLowerCase();
+
+      // Send transaction
+      setTopupStatus('Approve the transaction in your wallet…');
+      const txHash = await window.ethereum.request({
+        method: 'eth_sendTransaction',
+        params: [{ from: actualFrom, to: USDC_MAINNET, data }],
+      });
+
+      // Wait for on-chain confirmation
+      setTopupStatus('Waiting for confirmation on Base…');
+      const receipt = await waitForReceipt(txHash);
+      if (!receipt || receipt.status !== '0x1') throw new Error('Transaction reverted');
+
+      // Submit deposit proof
+      setTopupStatus('Confirmed! Crediting account…');
+      const proof = {
+        txHash, from: actualFrom,
+        amount: String(topupMicro),
+        timestamp: Math.floor(Date.now() / 1000),
+        signature: '0x',
+      };
+      const depRes = await fetch('/deposit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ walletAddress: actualFrom, proof: btoa(JSON.stringify(proof)) }),
+      });
+      if (!depRes.ok) {
+        const d = await depRes.json().catch(() => ({}));
+        throw new Error(d.error || `Server error ${depRes.status}`);
+      }
+      await depRes.json(); // consume response body
+
+      // Refresh pill immediately, then show confirmation before closing
+      const newBal = await fetchBalance();
+      const balStr = newBal !== null ? fmtBalance(newBal) : 'updated';
+      setTopupStatus('✓ Credits added! Balance: ' + balStr);
+      setTimeout(hideTopUp, 1800);
+
+    } catch (e) {
+      const msg = e.code === 4001
+        ? 'Transaction rejected by wallet.'
+        : 'Top-up failed: ' + (e.message || 'unknown error');
+      setTopupStatus(msg);
+      btn.disabled = false;
+    }
+  }
+
+  // ── Conversation helpers ───────────────────────────────────────────────────
+  // attachUsageInfo(msgEl, { usage, model, preBalance }) — live mode (cost computed from balance diff)
+  // attachUsageInfo(msgEl, { cost, model })              — history mode (cost already known)
+  function attachUsageInfo(msgEl, opts) {
+    const btn = document.createElement('button');
+    btn.className = 'msg-info-btn';
+    btn.title = 'Show usage details';
+    btn.textContent = 'ℹ details';
+
+    const meta = document.createElement('div');
+    meta.className = 'msg-meta';
+
+    const modelLabel = (opts.model || '').split('/').pop() || 'unknown';
+    const costText = opts.cost != null ? fmtBalance(opts.cost) : 'calculating…';
+    meta.innerHTML = `
+      <div class="msg-meta-row"><span>Cost</span><span class="msg-meta-cost">${costText}</span></div>
+      <div class="msg-meta-row"><span>Model</span><span>${modelLabel}</span></div>`;
+
+    btn.onclick = () => {
+      meta.classList.toggle('open');
+      if (meta.classList.contains('open')) {
+        meta.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    };
+
+    const roleEl = msgEl.querySelector('.msg-role');
+    roleEl.appendChild(btn);
+    const contentEl = msgEl.querySelector('.msg-content');
+    msgEl.insertBefore(meta, contentEl);
+
+    // Live mode: compute actual cost from balance difference after deduction completes
+    if (opts.preBalance !== undefined && opts.cost == null) {
+      setTimeout(async () => {
+        const postBalance = await fetchBalance();
+        const costEl = meta.querySelector('.msg-meta-cost');
+        if (costEl && postBalance !== null) {
+          const costMu = Math.max(0, opts.preBalance - postBalance);
+          costEl.textContent = fmtBalance(costMu);
+        }
+      }, 1500);
+    }
+  }
+
+  function appendMessage(role, content) {
+    const thread = document.getElementById('convoThread');
+    const emptyEl = document.getElementById('convoEmpty');
+    if (emptyEl) emptyEl.remove();
+    const div = document.createElement('div');
+    div.className = `msg msg-${role}`;
+    const roleEl = document.createElement('div');
+    roleEl.className = 'msg-role';
+    roleEl.textContent = role === 'user' ? 'you' : 'dox402';
+    const contentEl = document.createElement('div');
+    contentEl.className = 'msg-content';
+    contentEl.textContent = content;
+    div.appendChild(roleEl);
+    div.appendChild(contentEl);
+    thread.appendChild(div);
+    thread.scrollTop = thread.scrollHeight;
+    return div;
+  }
+
+  async function loadHistory() {
+    if (!wallet || !sessionToken) return;
+    try {
+      const res = await fetch('/history', { cache: 'no-store', headers: authHeaders() });
+      if (res.status === 401) { handleSessionExpired(); return; }
+      if (!res.ok) return;
+      const data = await res.json();
+      const history = data.history;
+      if (!history || history.length === 0) return;
+      const thread = document.getElementById('convoThread');
+      thread.innerHTML = ''; // clear empty state
+      for (const msg of history) {
+        const el = appendMessage(msg.role, msg.content);
+        if (msg.role === 'assistant' && msg.meta) {
+          attachUsageInfo(el, { cost: msg.meta.cost, model: msg.meta.model });
+        }
+      }
+      updateEstimate();
+    } catch (_) {}
+  }
+
+  async function clearHistory() {
+    if (!wallet) return;
+    try { await fetch('/history', { method: 'DELETE', headers: authHeaders() }); } catch (_) {}
+    const thread = document.getElementById('convoThread');
+    thread.innerHTML = '<div class="convo-empty" id="convoEmpty">No messages yet. Ask anything to begin.</div>';
+    document.getElementById('statusTxt').textContent = 'Conversation History';
+    document.getElementById('dot').classList.remove('live');
+    updateEstimate();
+  }
+
+  function setStreaming(on, contentEl) {
+    document.getElementById('dot').classList.toggle('live', on);
+    document.getElementById('statusTxt').textContent = on ? 'Streaming…' : 'Conversation History';
+    if (contentEl) contentEl.classList.toggle('cursor', on);
+  }
+
+  function setBusy(on) {
+    const btn = document.getElementById('sendBtn');
+    btn.disabled = on;
+    btn.textContent = on ? 'Sending…' : 'Send →';
+  }
+
+  function showErr(msg) {
+    const e = document.getElementById('err');
+    e.textContent = msg;
+    e.classList.add('on');
+  }
+
+  function hideErr() { document.getElementById('err').classList.remove('on'); }
+
+  function copyAddr() {
+    navigator.clipboard.writeText(document.getElementById('payAddr').textContent);
+  }
+
+  function copyLast() {
+    const msgs = document.querySelectorAll('.msg-assistant .msg-content');
+    if (!msgs.length) return;
+    navigator.clipboard.writeText(msgs[msgs.length - 1].textContent);
+  }
+</script>
+
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      background:            '#181818',
+      primaryColor:          '#2a1a08',
+      primaryBorderColor:    '#6b3010',
+      primaryTextColor:      '#ffffff',
+      secondaryColor:        '#231508',
+      tertiaryColor:         '#1a1008',
+      lineColor:             '#f6821f',
+      textColor:             '#c2c2c2',
+      actorBorder:           '#8b4010',
+      actorBkg:              '#2a1a08',
+      actorTextColor:        '#ffffff',
+      actorLineColor:        '#4a2808',
+      signalColor:           '#ff9540',
+      signalTextColor:       '#ffffff',
+      labelBoxBkgColor:      '#2a1a08',
+      labelBoxBorderColor:   '#6b3010',
+      labelTextColor:        '#ffffff',
+      noteBorderColor:       '#6b3010',
+      noteBkgColor:          '#2a1a08',
+      noteTextColor:         '#ffffff',
+      activationBorderColor: '#f6821f',
+      activationBkgColor:    '#2a1a08',
+      fontFamily:            'ui-monospace, SFMono-Regular, monospace',
+      fontSize:              '12px',
+    },
+  });
+</script>
+</body>
+</html>

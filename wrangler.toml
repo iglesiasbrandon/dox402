@@ -1,0 +1,32 @@
+name = "inference-gate"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability.logs]
+enabled = false
+invocation_logs = true
+
+[assets]
+directory = "./public"
+
+[ai]
+binding = "AI"
+
+[[durable_objects.bindings]]
+name = "INFERENCE_GATE"
+class_name = "InferenceGate"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["InferenceGate"]
+
+[vars]
+NETWORK = "base-mainnet"
+PAYMENT_ADDRESS = "0x24AF3AcF8A91f5185e8CfB28087E2C54d49785B1" # overridden by secret in production
+
+# BASE_RPC_URL is set as a wrangler secret (not a var) to avoid binding name conflicts.
+# To update: npx wrangler secret put BASE_RPC_URL
+# Do NOT set MOCK_PAYMENTS as a secret — absence = Tier 2 enforcement in production
+# SESSION_SECRET — HMAC key for SIWE session tokens. Set via: npx wrangler secret put SESSION_SECRET
+# Generate with: openssl rand -hex 32
