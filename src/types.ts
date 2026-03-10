@@ -27,7 +27,7 @@ export interface PaymentProof {
   from: string;      // payer wallet address (0x-prefixed)
   amount: string;    // USDC amount in smallest unit
   timestamp: number; // Unix seconds when proof was constructed
-  signature: string; // EIP-191 signature — vestigial in Tier 1 MVP (parsed but not cryptographically verified)
+  signature: string; // EIP-191 personal_sign over canonical proof message (verified via ecrecover)
 }
 
 // Deposit-only request body (top-up without inference)

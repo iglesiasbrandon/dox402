@@ -3,6 +3,7 @@ export const PAYMENT_MICRO_USDC    = 1000;                           // µUSDC a
 export const MICRO_USDC_PER_NEURON = 0.011;                          // $0.011/1M neurons → 0.011 µUSDC/neuron
 export const PROOF_MAX_AGE_SECS    = 300;                            // 5-minute proof validity window
 export const MAX_HISTORY_MESSAGES  = 20;                             // max stored messages (10 exchanges)
+export const MAX_TOKENS_LIMIT     = 2048;                            // server-side cap on maxTokens per request
 export const NETWORK               = 'base-mainnet';
 export const USDC_CONTRACT         = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; // Base Mainnet USDC
 export const AI_MODEL              = '@cf/meta/llama-3.1-8b-instruct'; // default model

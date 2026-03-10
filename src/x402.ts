@@ -1,5 +1,6 @@
 import { PRICE_USDC_UNITS, PAYMENT_MICRO_USDC, PROOF_MAX_AGE_SECS, NETWORK, USDC_CONTRACT } from './constants';
 import { PaymentRequired, PaymentProof, Env } from './types';
+import { recoverAddress } from './siwe';
 
 // ERC-20 Transfer(address indexed from, address indexed to, uint256 value)
 // keccak256("Transfer(address,address,uint256)")
@@ -17,6 +18,18 @@ interface EthReceipt {
   status: string; // '0x1' = success, '0x0' = reverted
   from: string;   // transaction sender
   logs: EthLog[];
+}
+
+// ── Proof message builder (shared with frontend for signing) ─────────────────
+
+export function buildProofMessage(proof: Pick<PaymentProof, 'txHash' | 'from' | 'amount' | 'timestamp'>): string {
+  return [
+    'dox402 payment proof',
+    `txHash: ${proof.txHash}`,
+    `from: ${proof.from.toLowerCase()}`,
+    `amount: ${proof.amount}`,
+    `timestamp: ${proof.timestamp}`,
+  ].join('\n');
 }
 
 // ── 402 response builder ───────────────────────────────────────────────────────
@@ -64,12 +77,23 @@ export async function verifyProof(
   if (BigInt(proof.amount) < BigInt(PRICE_USDC_UNITS))
     return { valid: false, reason: 'insufficient amount' };
 
-  // proof.signature — EIP-191 signature verification out of scope for this implementation
-  // Would need: ecrecover(keccak256(abi.encode(proof fields)), proof.signature) === proof.from
+  // MOCK_PAYMENTS bypasses signature + RPC checks in local dev — must never be set in production
+  if (env.MOCK_PAYMENTS === 'true') return { valid: true };
+
+  // EIP-191 signature verification — proves the wallet owner constructed this proof
+  if (!proof.signature || proof.signature === '0x')
+    return { valid: false, reason: 'missing proof signature' };
+
+  try {
+    const proofMessage = buildProofMessage(proof);
+    const recovered = recoverAddress(proofMessage, proof.signature);
+    if (recovered.toLowerCase() !== proof.from.toLowerCase())
+      return { valid: false, reason: 'proof signature does not match proof.from' };
+  } catch {
+    return { valid: false, reason: 'invalid proof signature' };
+  }
 
   // ── Tier 2: on-chain receipt verification ──────────────────────────────────
-  // MOCK_PAYMENTS bypasses RPC check in local dev — must never be set in production
-  if (env.MOCK_PAYMENTS === 'true') return { valid: true };
 
   if (!env.BASE_RPC_URL)
     return { valid: false, reason: 'BASE_RPC_URL not configured' };

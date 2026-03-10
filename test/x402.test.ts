@@ -1,20 +1,67 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { build402Response, verifyProof } from '../src/x402';
+import { build402Response, verifyProof, buildProofMessage } from '../src/x402';
 import { PRICE_USDC_UNITS, PAYMENT_MICRO_USDC, USDC_CONTRACT } from '../src/constants';
 import type { PaymentProof, Env } from '../src/types';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 
 const PAYMENT_ADDRESS = '0x24AF3AcF8A91f5185e8CfB28087E2C54d49785B1';
-const WALLET = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+
+// ── Test keypairs (deterministic per run) ───────────────────────────────────
+
+const PRIV_KEY = secp256k1.utils.randomSecretKey();
+const PUB_KEY = secp256k1.getPublicKey(PRIV_KEY, false);
+const ADDR_HASH = keccak_256(PUB_KEY.slice(1));
+const WALLET = '0x' + Array.from(ADDR_HASH.slice(12)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+// Second keypair for "wrong wallet" tests
+const PRIV_KEY_2 = secp256k1.utils.randomSecretKey();
+const PUB_KEY_2 = secp256k1.getPublicKey(PRIV_KEY_2, false);
+const ADDR_HASH_2 = keccak_256(PUB_KEY_2.slice(1));
+const WALLET_2 = '0x' + Array.from(ADDR_HASH_2.slice(12)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+// ── EIP-191 personal_sign (same logic as recoverAddress in siwe.ts, but signing) ─
+
+function personalSign(message: string, privateKey: Uint8Array): string {
+  const msgBytes = new TextEncoder().encode(message);
+  const prefix = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${msgBytes.length}`);
+  const prefixed = new Uint8Array(prefix.length + msgBytes.length);
+  prefixed.set(prefix);
+  prefixed.set(msgBytes, prefix.length);
+  const hash = keccak_256(prefixed);
+
+  const sig64 = secp256k1.sign(hash, privateKey, { prehash: false });
+  const expectedPub = secp256k1.getPublicKey(privateKey, false);
+
+  let recoveryBit = 0;
+  for (const v of [0, 1]) {
+    const sigObj = secp256k1.Signature.fromBytes(sig64).addRecoveryBit(v);
+    const recovered = sigObj.recoverPublicKey(hash).toBytes(false);
+    if (recovered.every((b: number, i: number) => b === expectedPub[i])) {
+      recoveryBit = v;
+      break;
+    }
+  }
+
+  const hex = Array.from(sig64).map(b => b.toString(16).padStart(2, '0')).join('');
+  return '0x' + hex + (recoveryBit + 27).toString(16).padStart(2, '0');
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 function makeProof(overrides?: Partial<PaymentProof>): PaymentProof {
-  return {
+  const base: Omit<PaymentProof, 'signature'> = {
     txHash: '0x' + 'a'.repeat(64),
     from: WALLET,
     amount: '1000',
     timestamp: Math.floor(Date.now() / 1000),
-    signature: '0xmock',
-    ...overrides,
   };
+  const merged = { ...base, ...overrides } as PaymentProof;
+  // Auto-sign with PRIV_KEY unless signature is explicitly provided in overrides
+  if (!overrides || !('signature' in overrides)) {
+    merged.signature = personalSign(buildProofMessage(merged), PRIV_KEY);
+  }
+  return merged;
 }
 
 function makeEnv(overrides?: Partial<Env>): Env {
@@ -97,6 +144,78 @@ describe('verifyProof — Tier 1 (structural)', () => {
     const proof = makeProof({ from: WALLET.toUpperCase() });
     const result = await verifyProof(proof, WALLET.toLowerCase(), makeEnv());
     expect(result.valid).toBe(true);
+  });
+});
+
+// ── verifyProof — Signature verification ─────────────────────────────────────
+
+describe('verifyProof — Signature verification', () => {
+  const env = makeEnv({ MOCK_PAYMENTS: undefined });
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Stub RPC to return a valid receipt (so we isolate signature checks)
+  function mockValidReceipt() {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      json: async () => ({
+        jsonrpc: '2.0', id: 1,
+        result: {
+          status: '0x1',
+          from: WALLET,
+          logs: [{
+            address: USDC_CONTRACT,
+            topics: [
+              '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+              '0x000000000000000000000000' + WALLET.slice(2).toLowerCase(),
+              '0x000000000000000000000000' + PAYMENT_ADDRESS.slice(2).toLowerCase(),
+            ],
+            data: '0x' + BigInt(1000).toString(16).padStart(64, '0'),
+          }],
+        },
+      }),
+    });
+  }
+
+  it('accepts proof with valid signature', async () => {
+    mockValidReceipt();
+    const result = await verifyProof(makeProof(), WALLET, env);
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects missing proof signature', async () => {
+    const proof = makeProof({ signature: '' });
+    const result = await verifyProof(proof, WALLET, env);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toContain('missing proof signature');
+  });
+
+  it('rejects placeholder 0x signature', async () => {
+    const proof = makeProof({ signature: '0x' });
+    const result = await verifyProof(proof, WALLET, env);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toContain('missing proof signature');
+  });
+
+  it('rejects invalid signature bytes', async () => {
+    const proof = makeProof({ signature: '0xdeadbeef' });
+    const result = await verifyProof(proof, WALLET, env);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toContain('invalid proof signature');
+  });
+
+  it('rejects signature from wrong wallet', async () => {
+    // Sign with PRIV_KEY_2 (whose address is WALLET_2) but claim from=WALLET
+    const proof = makeProof();
+    proof.signature = personalSign(buildProofMessage(proof), PRIV_KEY_2);
+    const result = await verifyProof(proof, WALLET, env);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toContain('does not match');
   });
 });
 

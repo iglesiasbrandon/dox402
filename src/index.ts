@@ -9,6 +9,30 @@ export { Dox402 };
 
 const WALLET_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
+// ── CORS ──────────────────────────────────────────────────────────────────
+
+function corsHeaders(origin: string): Record<string, string> {
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, PAYMENT-SIGNATURE',
+    'Access-Control-Expose-Headers': 'X-Balance, PAYMENT-REQUIRED',
+    'Access-Control-Max-Age': '86400',
+  };
+}
+
+function withCors(response: Response, origin: string): Response {
+  const headers = new Headers(response.headers);
+  for (const [k, v] of Object.entries(corsHeaders(origin))) {
+    headers.set(k, v);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function invalidWallet(): Response {
   return new Response(JSON.stringify({ error: 'Invalid wallet address format — expected 0x + 40 hex chars' }), {
     status: 400,
@@ -39,7 +63,19 @@ async function extractAuthWallet(request: Request, env: Env): Promise<string | n
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const origin = url.origin;
 
+    // ── CORS preflight ────────────────────────────────────────────────────
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders(origin) });
+    }
+
+    const response = await handleRequest(request, env, url);
+    return withCors(response, origin);
+  },
+};
+
+async function handleRequest(request: Request, env: Env, url: URL): Promise<Response> {
     // ── Public endpoints ─────────────────────────────────────────────────
 
     // GET /health — liveness probe
@@ -186,5 +222,4 @@ export default {
     }
 
     return new Response('Not found', { status: 404 });
-  },
-};
+}

@@ -681,16 +681,6 @@ Billed at actual token usage · 1 neuron ≈ 0.011 credits
       </button>
       <div id="payStatus"></div>
 
-      <!-- Fallback: paste txHash manually -->
-      <hr class="divider" />
-      <details id="manualDetails">
-        <summary>Paid from a different wallet? Enter txHash manually</summary>
-        <div class="manual-body">
-          <input id="txIn" type="text" placeholder="0x… (64-hex transaction hash)"
-                 spellcheck="false" style="font-family:var(--mono);font-size:12px" />
-          <button class="btn-ghost" onclick="retryWithTxHash()">Submit →</button>
-        </div>
-      </details>
     </div>
 
     <!-- Prompt -->
@@ -760,6 +750,26 @@ Billed at actual token usage · 1 neuron ≈ 0.011 credits
     '@cf/mistral/mistral-7b-instruct-v0.2':        { in: 10000,  out: 17300  },
     '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b': { in: 45170,  out: 443756 },
   };
+
+  // Canonical proof message — must match server-side buildProofMessage in x402.ts
+  function buildProofMessage(proof) {
+    return [
+      'dox402 payment proof',
+      `txHash: ${proof.txHash}`,
+      `from: ${proof.from.toLowerCase()}`,
+      `amount: ${proof.amount}`,
+      `timestamp: ${proof.timestamp}`,
+    ].join('\n');
+  }
+
+  // Sign a payment proof with the connected wallet via personal_sign
+  async function signProof(proof, signerAddress) {
+    const message = buildProofMessage(proof);
+    return await window.ethereum.request({
+      method: 'personal_sign',
+      params: [message, signerAddress],
+    });
+  }
 
   function countChars(text) { return (text || '').length; }
 
@@ -1077,16 +1087,17 @@ Billed at actual token usage · 1 neuron ≈ 0.011 credits
       const receipt = await waitForReceipt(txHash);
       if (!receipt || receipt.status !== '0x1') throw new Error('Transaction reverted');
 
-      // 6. Auto-submit proof — no user input needed
-      setPayStatus('Confirmed! Crediting account…');
+      // 6. Sign proof and submit
+      setPayStatus('Confirmed! Sign proof to credit account…');
       hidePayCard();
       const proof = {
         txHash,
         from:      actualFrom,
         amount:    String(amount),
         timestamp: Math.floor(Date.now() / 1000),
-        signature: '0x',
+        signature: '',
       };
+      proof.signature = await signProof(proof, actualFrom);
       setBusy(true);
       const proofHeader = btoa(JSON.stringify(proof));
       // Pass proof directly to doInfer and catch 402-after-payment as an error
@@ -1156,26 +1167,6 @@ Billed at actual token usage · 1 neuron ≈ 0.011 credits
       await new Promise(r => setTimeout(r, 2000));
     }
     throw new Error('Transaction not confirmed within 90 seconds');
-  }
-
-  // ── Manual txHash fallback ─────────────────────────────────────────────────
-  async function retryWithTxHash() {
-    const txHash = document.getElementById('txIn').value.trim();
-    if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
-      showErr('Enter the full 32-byte transaction hash (0x + 64 hex chars).');
-      return;
-    }
-    hideErr();
-    hidePayCard();
-    setBusy(true);
-    const proof = {
-      txHash,
-      from:      wallet,
-      amount:    paymentDetails?.amount ?? '1000',
-      timestamp: Math.floor(Date.now() / 1000),
-      signature: '0x',
-    };
-    await doInfer(pendingPrompt, btoa(JSON.stringify(proof)), pendingModel);
   }
 
   // ── Core inference ─────────────────────────────────────────────────────────
@@ -1369,14 +1360,15 @@ Billed at actual token usage · 1 neuron ≈ 0.011 credits
       const receipt = await waitForReceipt(txHash);
       if (!receipt || receipt.status !== '0x1') throw new Error('Transaction reverted');
 
-      // Submit deposit proof
-      setTopupStatus('Confirmed! Crediting account…');
+      // Sign and submit deposit proof
+      setTopupStatus('Confirmed! Sign proof to credit account…');
       const proof = {
         txHash, from: actualFrom,
         amount: String(topupMicro),
         timestamp: Math.floor(Date.now() / 1000),
-        signature: '0x',
+        signature: '',
       };
+      proof.signature = await signProof(proof, actualFrom);
       const depRes = await fetch('/deposit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
