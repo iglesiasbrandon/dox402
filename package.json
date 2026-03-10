@@ -10,7 +10,9 @@
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy",
     "cf-typegen": "wrangler types",
-    "test": "npx ts-node --esm test/client.ts"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "npx ts-node --esm test/e2e.ts"
   },
   "keywords": [],
   "author": "",
@@ -20,6 +22,7 @@
     "@cloudflare/workers-types": "^4.20260307.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
+    "vitest": "^4.0.18",
     "wrangler": "^4.71.0"
   },
   "dependencies": {

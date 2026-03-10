@@ -34,13 +34,19 @@ MOCK_PAYMENTS=true
 SESSION_SECRET=<any-hex-string>
 ```
 
-In a second terminal, run the 9-phase end-to-end test:
+Run unit tests (no server needed):
 
 ```bash
-npx ts-node --esm test/client.ts
+npm test
 ```
 
-The test client generates a random wallet, signs SIWE messages programmatically using `@noble/curves`, authenticates, deposits with a mock proof, runs inference, and verifies balance/history.
+Run the 9-phase end-to-end test (requires running dev server):
+
+```bash
+npm run test:e2e
+```
+
+The E2E test generates a random wallet, signs SIWE messages programmatically using `@noble/curves`, authenticates, deposits with a mock proof, runs inference, and verifies balance/history.
 
 ---
 
