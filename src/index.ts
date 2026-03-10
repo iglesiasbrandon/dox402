@@ -117,6 +117,18 @@ export default {
       const authWallet = await extractAuthWallet(request, env);
       if (!authWallet) return unauthorized();
 
+      // Peek at body to verify walletAddress matches token (prevents misuse)
+      let body: DepositRequest;
+      try {
+        body = await request.clone().json<DepositRequest>();
+      } catch {
+        return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+      }
+
+      if (body.walletAddress && body.walletAddress.toLowerCase() !== authWallet) {
+        return Response.json({ error: 'walletAddress does not match authenticated session' }, { status: 403 });
+      }
+
       const stub = getDoStub(env, authWallet);
       return stub.fetch(request);
     }

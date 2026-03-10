@@ -6,6 +6,11 @@ import { parseSSE, computeCostMicroUSDC } from './billing';
 import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof } from './types';
 
 export class Dox402 extends DurableObject<Env> {
+  /** Wallet address derived from DO identity — immutable, not user-supplied */
+  private get walletAddress(): string {
+    return `0x${this.ctx.id.name!}`;
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/infer' && request.method === 'POST') {
@@ -76,7 +81,7 @@ export class Dox402 extends DurableObject<Env> {
     }
 
     // Step 6: Tier 1 structural + Tier 2 on-chain verification
-    const check = await verifyProof(proof, body.walletAddress, this.env);
+    const check = await verifyProof(proof, this.walletAddress, this.env);
     if (!check.valid) {
       return new Response(JSON.stringify({ error: check.reason }), {
         status: 402,
@@ -214,7 +219,7 @@ export class Dox402 extends DurableObject<Env> {
       return Response.json({ error: 'Malformed proof — expected base64-encoded JSON' }, { status: 400 });
     }
 
-    const check = await verifyProof(proof, body.walletAddress, this.env);
+    const check = await verifyProof(proof, this.walletAddress, this.env);
     if (!check.valid) {
       return Response.json({ error: check.reason }, { status: 402 });
     }

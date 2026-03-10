@@ -32,14 +32,14 @@ export interface PaymentProof {
 
 // Deposit-only request body (top-up without inference)
 export interface DepositRequest {
-  walletAddress: string; // 0x-prefixed EVM address
+  walletAddress: string; // 0x-prefixed EVM address — validated against session at router; DO derives wallet from its ID
   proof: string;         // base64-encoded PaymentProof JSON
 }
 
 // Inference request body
 export interface InferRequest {
   prompt: string;
-  walletAddress: string; // 0x-prefixed EVM address (validated: must match /^0x[0-9a-fA-F]{40}$/)
+  walletAddress: string; // 0x-prefixed EVM address — validated against session at router; DO derives wallet from its ID
   maxTokens?: number;    // default 512
   model?: string;        // Workers AI model ID — validated against ALLOWED_MODELS; falls back to AI_MODEL
 }
