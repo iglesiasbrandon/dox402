@@ -1,11 +1,11 @@
-import { InferenceGate } from './inferenceGate';
+import { Dox402 } from './dox402';
 import { Env, InferRequest, DepositRequest } from './types';
 import { USDC_CONTRACT } from './constants';
 import { verifySiweLogin } from './siwe';
 import { createSessionToken, verifySessionToken } from './session';
 
 // Re-export the DO class so Cloudflare can find it
-export { InferenceGate };
+export { Dox402 };
 
 const WALLET_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
@@ -22,8 +22,8 @@ function unauthorized(reason = 'Missing or invalid session token'): Response {
 
 function getDoStub(env: Env, walletAddress: string): DurableObjectStub {
   const doName = walletAddress.slice(2).toLowerCase(); // strip 0x, lowercase
-  const id = env.INFERENCE_GATE.idFromName(doName);
-  return env.INFERENCE_GATE.get(id);
+  const id = env.DOX402.idFromName(doName);
+  return env.DOX402.get(id);
 }
 
 // Extract verified wallet from Authorization: Bearer <token>

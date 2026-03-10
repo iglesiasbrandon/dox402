@@ -1,4 +1,4 @@
-# inference-gate
+# dox402
 
 Edge-native, accountless, pay-per-use AI inference using Cloudflare Durable Objects + the x402 payment protocol.
 
@@ -80,7 +80,7 @@ Returns: `{ status: "ok" }`
 
 ## Architecture
 
-- **Durable Object** (`InferenceGate`): one instance per wallet address. Holds credit balance and seen-txHash keys in strongly-consistent storage. All credit updates happen inside `storage.transaction()` to prevent race conditions.
+- **Durable Object** (`Dox402`): one instance per wallet address. Holds credit balance and seen-txHash keys in strongly-consistent storage. All credit updates happen inside `storage.transaction()` to prevent race conditions.
 - **Worker** (`index.ts`): validates wallet address format, routes to the correct DO instance.
 - **Replay prevention**: each payment hash stored as `seen:{txHash} = timestamp` (individual keys — O(1) lookup, no array read).
 - **Verification**: Tier 1 only (structural checks). Tier 2 on-chain RPC verification is marked with TODO comments.

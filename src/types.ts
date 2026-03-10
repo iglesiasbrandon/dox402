@@ -46,7 +46,7 @@ export interface InferRequest {
 
 // Env bindings (matches wrangler.toml)
 export interface Env {
-  INFERENCE_GATE: DurableObjectNamespace;
+  DOX402: DurableObjectNamespace;
   AI: Ai;
   PAYMENT_ADDRESS: string;
   BASE_RPC_URL: string;

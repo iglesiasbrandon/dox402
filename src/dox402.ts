@@ -43,7 +43,7 @@ function computeCostMicroUSDC(
   return Math.max(1, Math.ceil(neurons * MICRO_USDC_PER_NEURON));
 }
 
-export class InferenceGate extends DurableObject<Env> {
+export class Dox402 extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/infer' && request.method === 'POST') {
@@ -168,7 +168,7 @@ export class InferenceGate extends DurableObject<Env> {
         stream = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(mock)); c.close(); } });
       } else {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error('[InferenceGate] AI inference failed:', msg);
+        console.error('[Dox402] AI inference failed:', msg);
         return Response.json(
           { error: `Inference failed: ${msg}` },
           { status: 502 },

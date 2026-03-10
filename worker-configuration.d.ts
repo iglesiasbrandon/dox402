@@ -4,7 +4,7 @@
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./src/index");
-		durableNamespaces: "InferenceGate";
+		durableNamespaces: "Dox402";
 	}
 	interface Env {
 		AI: Ai;
@@ -12,7 +12,7 @@ declare namespace Cloudflare {
 		PAYMENT_ADDRESS: "0x000000000000000000000000000000000000dead";
 		BASE_RPC_URL: "https://mainnet.base.org";
 		MOCK_PAYMENTS: "true";
-		INFERENCE_GATE: DurableObjectNamespace<import("./src/index").InferenceGate>;
+		DOX402: DurableObjectNamespace<import("./src/index").Dox402>;
 	}
 }
 interface Env extends Cloudflare.Env {}
