@@ -44,6 +44,12 @@ export interface InferRequest {
   model?: string;        // Workers AI model ID — validated against ALLOWED_MODELS; falls back to AI_MODEL
 }
 
+// Stored SIWE nonce — kept in an array of up to 5 per wallet
+export interface StoredNonce {
+  nonce: string;
+  createdAt: number;
+}
+
 // Env bindings (matches wrangler.toml)
 export interface Env {
   DOX402: DurableObjectNamespace;

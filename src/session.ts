@@ -55,11 +55,28 @@ async function hmacSign(data: string, secret: string): Promise<string> {
 }
 
 // ── Timing-safe string comparison ────────────────────────────────────────────
+// Uses native crypto.subtle.timingSafeEqual when available (Cloudflare Workers),
+// falls back to constant-time manual comparison for Node.js test environments.
+// Both inputs are padded to the same length to avoid timing leaks on length mismatch.
 function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  const enc = new TextEncoder();
+  const bufA = enc.encode(a);
+  const bufB = enc.encode(b);
+  const maxLen = Math.max(bufA.byteLength, bufB.byteLength);
+  // Pad both to the same length so comparison is always constant-time
+  const paddedA = new Uint8Array(maxLen);
+  const paddedB = new Uint8Array(maxLen);
+  paddedA.set(bufA);
+  paddedB.set(bufB);
+
+  // Use native API if available (Cloudflare Workers runtime)
+  if (typeof crypto.subtle.timingSafeEqual === 'function') {
+    return bufA.byteLength === bufB.byteLength && crypto.subtle.timingSafeEqual(paddedA, paddedB);
+  }
+  // Fallback: manual constant-time XOR comparison
+  let result = bufA.byteLength ^ bufB.byteLength; // non-zero if lengths differ
+  for (let i = 0; i < maxLen; i++) {
+    result |= paddedA[i] ^ paddedB[i];
   }
   return result === 0;
 }

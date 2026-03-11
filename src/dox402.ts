@@ -3,7 +3,7 @@ import { build402Response, verifyProof } from './x402';
 import { runInference } from './ai';
 import { AI_MODEL, MAX_HISTORY_MESSAGES, PAYMENT_MICRO_USDC, RATE_LIMIT_PER_MINUTE } from './constants';
 import { parseSSE, computeCostMicroUSDC } from './billing';
-import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof } from './types';
+import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, StoredNonce } from './types';
 
 export class InferenceGate extends DurableObject<Env> {
   /** Wallet address derived from DO identity — immutable, not user-supplied */
@@ -307,12 +307,28 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   // ── SIWE nonce management ──────────────────────────────────────────────────
+  // Stores an array of up to MAX_NONCES valid nonces per wallet to support
+  // concurrent login flows and prevent nonce-overwrite DoS attacks.
+
+  private static readonly NONCE_EXPIRY_MS = 300_000; // 5 minutes
+  private static readonly MAX_NONCES = 5;
 
   private async handleNonce(): Promise<Response> {
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     const nonce = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    await this.ctx.storage.put('siwe:nonce', { nonce, createdAt: Date.now() });
+    const now = Date.now();
+
+    const existing = (await this.ctx.storage.get<StoredNonce[]>('siwe:nonces')) ?? [];
+    // Prune expired nonces
+    const valid = existing.filter(n => now - n.createdAt <= InferenceGate.NONCE_EXPIRY_MS);
+    // Cap at MAX_NONCES - 1 to make room for the new one (drop oldest first)
+    const trimmed = valid.length >= InferenceGate.MAX_NONCES
+      ? valid.slice(-(InferenceGate.MAX_NONCES - 1))
+      : valid;
+    trimmed.push({ nonce, createdAt: now });
+    await this.ctx.storage.put('siwe:nonces', trimmed);
+
     return Response.json({ nonce }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
@@ -324,17 +340,20 @@ export class InferenceGate extends DurableObject<Env> {
       return Response.json({ error: 'Invalid JSON' }, { status: 400 });
     }
 
-    const stored = await this.ctx.storage.get<{ nonce: string; createdAt: number }>('siwe:nonce');
-    if (!stored || stored.nonce !== body.nonce) {
+    const nonces = (await this.ctx.storage.get<StoredNonce[]>('siwe:nonces')) ?? [];
+    const idx = nonces.findIndex(n => n.nonce === body.nonce);
+    if (idx === -1) {
       return Response.json({ error: 'Invalid or expired nonce' }, { status: 401 });
     }
-    // 5-minute nonce expiry
-    if (Date.now() - stored.createdAt > 300_000) {
-      await this.ctx.storage.delete('siwe:nonce');
+    // Check 5-minute expiry
+    if (Date.now() - nonces[idx].createdAt > InferenceGate.NONCE_EXPIRY_MS) {
+      nonces.splice(idx, 1);
+      await this.ctx.storage.put('siwe:nonces', nonces);
       return Response.json({ error: 'Nonce expired' }, { status: 401 });
     }
-    // One-time use — delete after verification
-    await this.ctx.storage.delete('siwe:nonce');
+    // One-time use — remove from array after verification
+    nonces.splice(idx, 1);
+    await this.ctx.storage.put('siwe:nonces', nonces);
     return Response.json({ valid: true });
   }
 }
