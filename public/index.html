@@ -563,13 +563,13 @@ DELETE /history   clear conversation</pre>
       <div class="readme-section">
         <div class="readme-h">Pricing</div>
         <pre class="readme-pre">0.001 USDC → 1,000 credits (µUSDC)
-Billed at actual token usage · 1 neuron ≈ 0.011 credits
+Per-request fee covers infrastructure + 15% margin
 
-  Llama 3.1 8B     ~1–3 credits/request
-  Llama 3.3 70B    ~2–4 credits/request
-  Gemma 3 12B      ~1–3 credits/request
-  Mistral 7B       ~1 credit/request
-  DeepSeek R1 32B  ~2–8 credits/request</pre>
+  Llama 3.1 8B     ~8–10 credits/request
+  Llama 3.3 70B    ~9–13 credits/request
+  Gemma 3 12B      ~8–10 credits/request
+  Mistral 7B       ~8 credits/request
+  DeepSeek R1 32B  ~10–20 credits/request</pre>
       </div>
 
       <div class="readme-section">
@@ -588,6 +588,10 @@ Billed at actual token usage · 1 neuron ≈ 0.011 credits
     </div>
 
     <div class="lp-footer">
+      <a href="https://github.com/iglesiasbrandon/dox402" target="_blank" style="display:inline-flex;align-items:center;gap:5px;">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+      <span style="margin:0 2px;">·</span>
       <a href="https://www.x402.org" target="_blank">x402 protocol</a> ·
       <a href="https://developers.cloudflare.com/durable-objects/" target="_blank">Durable Objects</a> ·
       <a href="https://basescan.org" target="_blank">Basescan</a>
@@ -994,8 +998,9 @@ Billed at actual token usage · 1 neuron ≈ 0.011 credits
 
     const neuronsMin  = (totalInToks * rates.in + outMinToks * rates.out) / 1e6;
     const neuronsMax  = (totalInToks * rates.in + outMaxToks * rates.out) / 1e6;
-    const costMinCr   = Math.max(1, Math.ceil(neuronsMin * 0.011));
-    const costMaxCr   = Math.max(1, Math.ceil(neuronsMax * 0.011));
+    const OVERHEAD = 6, MARGIN = 0.15; // must match server OVERHEAD_MICRO_USDC & TARGET_MARGIN
+    const costMinCr   = Math.max(1, Math.ceil((neuronsMin * 0.011 + OVERHEAD) / (1 - MARGIN)));
+    const costMaxCr   = Math.max(1, Math.ceil((neuronsMax * 0.011 + OVERHEAD) / (1 - MARGIN)));
 
     // Estimate card body (only if open)
     if (!estOpen) return;

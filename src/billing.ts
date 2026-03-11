@@ -1,4 +1,4 @@
-import { AI_MODEL, MICRO_USDC_PER_NEURON, NEURON_RATES } from './constants';
+import { AI_MODEL, MICRO_USDC_PER_NEURON, NEURON_RATES, OVERHEAD_MICRO_USDC, TARGET_MARGIN } from './constants';
 
 // Parse SSE payload — returns assistant text and token usage if present
 export function parseSSE(sse: string): { text: string; usage: { prompt_tokens: number; completion_tokens: number } | null } {
@@ -35,6 +35,8 @@ export function computeCostMicroUSDC(
   }
   if (promptTokens === 0 && completionTokens === 0) return 0;
   const neurons = (promptTokens * rates.in + completionTokens * rates.out) / 1e6;
-  // Minimum 1 µUSDC per request — prevents free inference on very short inputs
-  return Math.max(1, Math.ceil(neurons * MICRO_USDC_PER_NEURON));
+  // Price = ceil(COGS / (1 − margin)) where COGS = raw neuron cost + infrastructure overhead
+  const rawNeuronCost = neurons * MICRO_USDC_PER_NEURON;
+  const cogs = rawNeuronCost + OVERHEAD_MICRO_USDC;
+  return Math.max(1, Math.ceil(cogs / (1 - TARGET_MARGIN)));
 }

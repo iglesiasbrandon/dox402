@@ -1,6 +1,8 @@
 export const PRICE_USDC_UNITS      = '1000';                         // $0.001 USDC per payment
 export const PAYMENT_MICRO_USDC    = 1000;                           // µUSDC added per payment (1 µUSDC = $0.000001)
 export const MICRO_USDC_PER_NEURON = 0.011;                          // $0.011/1M neurons → 0.011 µUSDC/neuron
+export const OVERHEAD_MICRO_USDC   = 6;                               // estimated DO + Workers overhead per request (µUSDC)
+export const TARGET_MARGIN         = 0.15;                             // target gross margin (15%)
 export const PROOF_MAX_AGE_SECS    = 300;                            // 5-minute proof validity window
 export const MAX_HISTORY_MESSAGES  = 20;                             // max stored messages (10 exchanges)
 export const MAX_TOKENS_LIMIT     = 2048;                            // server-side cap on maxTokens per request
