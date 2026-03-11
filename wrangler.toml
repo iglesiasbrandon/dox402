@@ -1,4 +1,4 @@
-name = "dox402"
+name = "inference-gate"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
@@ -15,11 +15,11 @@ binding = "AI"
 
 [[durable_objects.bindings]]
 name = "DOX402"
-class_name = "Dox402"
+class_name = "InferenceGate"
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["Dox402"]
+new_sqlite_classes = ["InferenceGate"]
 
 [vars]
 NETWORK = "base-mainnet"

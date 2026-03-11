@@ -1,11 +1,11 @@
-import { Dox402 } from './dox402';
+import { InferenceGate } from './dox402';
 import { Env, InferRequest, DepositRequest } from './types';
 import { USDC_CONTRACT } from './constants';
 import { verifySiweLogin } from './siwe';
 import { createSessionToken, verifySessionToken } from './session';
 
 // Re-export the DO class so Cloudflare can find it
-export { Dox402 };
+export { InferenceGate };
 
 const WALLET_REGEX = /^0x[0-9a-fA-F]{40}$/;
 

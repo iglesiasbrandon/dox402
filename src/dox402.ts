@@ -5,7 +5,7 @@ import { AI_MODEL, MAX_HISTORY_MESSAGES, PAYMENT_MICRO_USDC, RATE_LIMIT_PER_MINU
 import { parseSSE, computeCostMicroUSDC } from './billing';
 import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof } from './types';
 
-export class Dox402 extends DurableObject<Env> {
+export class InferenceGate extends DurableObject<Env> {
   /** Wallet address derived from DO identity — immutable, not user-supplied */
   private get walletAddress(): string {
     return `0x${this.ctx.id.name!}`;
@@ -157,7 +157,7 @@ export class Dox402 extends DurableObject<Env> {
         stream = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(mock)); c.close(); } });
       } else {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error('[Dox402] AI inference failed:', msg);
+        console.error('[InferenceGate] AI inference failed:', msg);
         return Response.json(
           { error: `Inference failed: ${msg}` },
           { status: 502 },
