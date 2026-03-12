@@ -1088,11 +1088,11 @@ Per-request fee covers infrastructure + 15% margin
         + to.slice(2).padStart(64, '0')
         + amount.toString(16).padStart(64, '0');
 
-      // 3. Get the actual connected account (may differ from stale wallet state)
-      const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+      // 3. Get the actual connected account — use eth_requestAccounts to ensure
+      // the wallet is actively authorized for signing (Brave Wallet requires this)
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
       const actualFrom = (accounts[0] || wallet).toLowerCase();
       if (actualFrom !== wallet.toLowerCase()) {
-        // Sync wallet state with actual connected account
         setWallet(accounts[0]);
       }
 
@@ -1366,8 +1366,17 @@ Per-request fee covers infrastructure + 15% margin
         + paymentAddress.slice(2).padStart(64, '0')
         + amount.toString(16).padStart(64, '0');
 
-      const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+      // Use eth_requestAccounts (not eth_accounts) to ensure wallet is actively
+      // authorized for signing in the current session (Brave Wallet requires this)
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
       const actualFrom = (accounts[0] || wallet).toLowerCase();
+
+      // Verify active wallet matches session — re-auth if it changed
+      if (actualFrom !== wallet.toLowerCase()) {
+        setTopupStatus('Wallet changed — re-authenticating…');
+        await connectInjected();
+        if (!sessionToken) throw new Error('Re-authentication failed. Please sign in and try again.');
+      }
 
       // Send transaction
       setTopupStatus('Approve the transaction in your wallet…');
@@ -1381,30 +1390,39 @@ Per-request fee covers infrastructure + 15% margin
       const receipt = await waitForReceipt(txHash);
       if (!receipt || receipt.status !== '0x1') throw new Error('Transaction reverted');
 
-      // Sign and submit deposit proof
-      setTopupStatus('Confirmed! Sign proof to credit account…');
+      // Submit deposit proof with retry (server RPC may lag behind wallet RPC)
+      setTopupStatus('Confirmed! Crediting account…');
       const proof = {
         txHash, from: actualFrom,
         amount: String(topupMicro),
         timestamp: Math.floor(Date.now() / 1000),
         signature: '',
       };
-      proof.signature = await signProof(proof, actualFrom);
-      const depRes = await fetch('/deposit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ walletAddress: actualFrom, proof: btoa(JSON.stringify(proof)) }),
-      });
-      if (!depRes.ok) {
+      const proofBody = JSON.stringify({ walletAddress: actualFrom, proof: btoa(JSON.stringify(proof)) });
+      let depRes, depData;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        if (attempt > 0) {
+          setTopupStatus(`Server RPC syncing… retry ${attempt}/4`);
+          await new Promise(r => setTimeout(r, 3000));
+        }
+        depRes = await fetch('/deposit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: proofBody,
+        });
+        if (depRes.ok) { depData = await depRes.json(); break; }
         const d = await depRes.json().catch(() => ({}));
-        throw new Error(d.error || `Server error ${depRes.status}`);
+        // Retry on "not found" (RPC lag) or server errors; fail fast on auth/proof errors
+        const retriable = depRes.status >= 500 || (d.error && d.error.includes('not found'));
+        if (!retriable) throw new Error(d.error || `Server error ${depRes.status}`);
       }
-      await depRes.json(); // consume response body
+      if (!depData) throw new Error('Server could not verify transaction after retries. Your USDC was sent — contact support with txHash: ' + txHash);
 
-      // Refresh pill immediately, then show confirmation before closing
-      const newBal = await fetchBalance();
-      const balStr = newBal !== null ? fmtBalance(newBal) : 'updated';
-      setTopupStatus('✓ Credits added! Balance: ' + balStr);
+      // Use balance from deposit response directly (avoids extra /balance call that could fail)
+      const bal = depData.balance ?? null;
+      if (bal !== null) document.getElementById('pillN').textContent = fmtBalance(bal);
+      setTopupStatus('✓ Credits added! Balance: ' + (bal !== null ? fmtBalance(bal) : 'updated'));
+      btn.disabled = false;
       setTimeout(hideTopUp, 1800);
 
     } catch (e) {

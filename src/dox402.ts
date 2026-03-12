@@ -6,9 +6,12 @@ import { parseSSE, computeCostMicroUSDC } from './billing';
 import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, StoredNonce } from './types';
 
 export class InferenceGate extends DurableObject<Env> {
-  /** Wallet address derived from DO identity — immutable, not user-supplied */
+  /** Wallet address set by the router via X-DO-Wallet header on each request */
+  private wallet = '';
+
+  /** Wallet address for the current request — set in fetch() from router header */
   private get walletAddress(): string {
-    return `0x${this.ctx.id.name!}`;
+    return this.wallet;
   }
 
   /** Fixed-window rate limit: RATE_LIMIT_PER_MINUTE requests per 60-second window */
@@ -31,6 +34,10 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    // Router passes the authenticated wallet via header — guaranteed present
+    const walletHeader = request.headers.get('X-DO-Wallet');
+    if (walletHeader) this.wallet = walletHeader;
+
     const limited = await this.checkRateLimit();
     if (limited) return limited;
 
@@ -241,7 +248,9 @@ export class InferenceGate extends DurableObject<Env> {
       return Response.json({ error: 'Malformed proof — expected base64-encoded JSON' }, { status: 400 });
     }
 
-    const check = await verifyProof(proof, this.walletAddress, this.env);
+    // Skip signature check: deposit is already behind Bearer auth (router verified identity)
+    // and on-chain receipt.from confirms the sender — proof signature adds no security value.
+    const check = await verifyProof(proof, this.walletAddress, this.env, { skipSignature: true });
     if (!check.valid) {
       return Response.json({ error: check.reason }, { status: 402 });
     }

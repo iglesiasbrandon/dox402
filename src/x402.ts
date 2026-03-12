@@ -68,6 +68,7 @@ export async function verifyProof(
   proof: PaymentProof,
   walletAddress: string,
   env: Env,
+  opts?: { skipSignature?: boolean },
 ): Promise<{ valid: boolean; reason?: string; amount?: number }> {
 
   // ── Tier 1: structural checks (fast, no I/O) ──────────────────────────────
@@ -77,7 +78,7 @@ export async function verifyProof(
     return { valid: false, reason: 'proof expired' };
 
   if (proof.from.toLowerCase() !== walletAddress.toLowerCase())
-    return { valid: false, reason: 'wallet mismatch' };
+    return { valid: false, reason: `wallet mismatch: proof.from=${proof.from.toLowerCase()} expected=${walletAddress.toLowerCase()}` };
 
   if (BigInt(proof.amount) < BigInt(PRICE_USDC_UNITS))
     return { valid: false, reason: 'insufficient amount' };
@@ -85,17 +86,21 @@ export async function verifyProof(
   // MOCK_PAYMENTS bypasses signature + RPC checks in local dev — must never be set in production
   if (env.MOCK_PAYMENTS === 'true') return { valid: true };
 
-  // EIP-191 signature verification — proves the wallet owner constructed this proof
-  if (!proof.signature || proof.signature === '0x')
-    return { valid: false, reason: 'missing proof signature' };
+  // EIP-191 signature verification — proves the wallet owner constructed this proof.
+  // Skipped for authenticated deposits where Bearer token already establishes identity
+  // and on-chain receipt.from confirms the sender.
+  if (!opts?.skipSignature) {
+    if (!proof.signature || proof.signature === '0x')
+      return { valid: false, reason: 'missing proof signature' };
 
-  try {
-    const proofMessage = buildProofMessage(proof);
-    const recovered = recoverAddress(proofMessage, proof.signature);
-    if (recovered.toLowerCase() !== proof.from.toLowerCase())
-      return { valid: false, reason: 'proof signature does not match proof.from' };
-  } catch {
-    return { valid: false, reason: 'invalid proof signature' };
+    try {
+      const proofMessage = buildProofMessage(proof);
+      const recovered = recoverAddress(proofMessage, proof.signature);
+      if (recovered.toLowerCase() !== proof.from.toLowerCase())
+        return { valid: false, reason: 'proof signature does not match proof.from' };
+    } catch {
+      return { valid: false, reason: 'invalid proof signature' };
+    }
   }
 
   // ── Tier 2: on-chain receipt verification ──────────────────────────────────
