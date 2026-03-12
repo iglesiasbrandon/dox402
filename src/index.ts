@@ -3,6 +3,7 @@ import { Env, InferRequest, DepositRequest } from './types';
 import { USDC_CONTRACT } from './constants';
 import { verifySiweLogin } from './siwe';
 import { createSessionToken, verifySessionToken } from './session';
+import { parseSiwxHeader, verifySiwxPayload, buildSiwxExtension } from './siwx';
 
 // Re-export the DO class so Cloudflare can find it
 export { InferenceGate };
@@ -15,7 +16,7 @@ function corsHeaders(origin: string): Record<string, string> {
   return {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, PAYMENT-SIGNATURE',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, PAYMENT-SIGNATURE, SIGN-IN-WITH-X',
     'Access-Control-Expose-Headers': 'X-Balance, PAYMENT-REQUIRED',
     'Access-Control-Max-Age': '86400',
   };
@@ -58,6 +59,40 @@ async function extractAuthWallet(request: Request, env: Env): Promise<string | n
   const payload = await verifySessionToken(token, env.SESSION_SECRET);
   if (!payload) return null;
   return payload.sub; // lowercase 0x-prefixed wallet address
+}
+
+// Extract wallet from SIGN-IN-WITH-X header, verify nonce via DO, issue session token
+async function extractSiwxWallet(
+  request: Request, env: Env, url: URL,
+): Promise<{ wallet: string; token: string; expiresAt: number } | null> {
+  const siwxHeader = request.headers.get('SIGN-IN-WITH-X');
+  if (!siwxHeader) return null;
+
+  const payload = parseSiwxHeader(siwxHeader);
+  if (!payload) return null;
+
+  const result = verifySiwxPayload(payload, url.host);
+  if (!result.valid) return null;
+
+  const wallet = result.address.toLowerCase();
+  if (!WALLET_REGEX.test(wallet)) return null;
+
+  // Verify nonce via DO (one-time use)
+  const stub = getDoStub(env, wallet);
+  // Extract nonce from the SIWE message
+  const nonceMatch = payload.message.match(/^Nonce: (.+)$/m);
+  if (!nonceMatch) return null;
+
+  const nonceRes = await stub.fetch(new Request(`${url.origin}/auth/verify-nonce`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nonce: nonceMatch[1] }),
+  }));
+  if (!nonceRes.ok) return null;
+
+  // Issue session token with chain info
+  const { token, expiresAt } = await createSessionToken(wallet, env.SESSION_SECRET, payload.chainId);
+  return { wallet, token, expiresAt };
 }
 
 export default {
@@ -171,7 +206,18 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
 
     // POST /infer — pay-per-use inference
     if (url.pathname === '/infer' && request.method === 'POST') {
-      const authWallet = await extractAuthWallet(request, env);
+      // Try Bearer token first, then SIWX header
+      let authWallet = await extractAuthWallet(request, env);
+      let siwxSession: { token: string; expiresAt: number } | undefined;
+
+      if (!authWallet) {
+        const siwxResult = await extractSiwxWallet(request, env, url);
+        if (siwxResult) {
+          authWallet = siwxResult.wallet;
+          siwxSession = { token: siwxResult.token, expiresAt: siwxResult.expiresAt };
+        }
+      }
+
       if (!authWallet) return unauthorized();
 
       // Peek at body to verify walletAddress matches token (prevents misuse)
@@ -191,7 +237,22 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
 
       // Route to the authenticated wallet's DO
       const stub = getDoStub(env, authWallet);
-      return stub.fetch(request);
+      const doResponse = await stub.fetch(request);
+
+      // If 402 returned, augment with SIWX extension so clients can discover auth
+      if (doResponse.status === 402) {
+        return await augment402WithSiwx(doResponse, env, authWallet, url);
+      }
+
+      // If authenticated via SIWX, include the session token in response headers
+      if (siwxSession) {
+        const headers = new Headers(doResponse.headers);
+        headers.set('X-Session-Token', siwxSession.token);
+        headers.set('X-Session-Expires', String(siwxSession.expiresAt));
+        return new Response(doResponse.body, { status: doResponse.status, headers });
+      }
+
+      return doResponse;
     }
 
     // GET /balance — credit balance lookup (wallet derived from token)
@@ -222,4 +283,31 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
     }
 
     return new Response('Not found', { status: 404 });
+}
+
+// ── SIWX 402 augmentation ────────────────────────────────────────────────────
+// When the DO returns 402, fetch a nonce and attach the SIWX extension so
+// x402-aware clients can discover how to authenticate.
+async function augment402WithSiwx(
+  doResponse: Response, env: Env, wallet: string, url: URL,
+): Promise<Response> {
+  try {
+    const stub = getDoStub(env, wallet);
+    const nonceRes = await stub.fetch(new Request(`${url.origin}/auth/nonce`, { method: 'GET' }));
+    const { nonce } = await nonceRes.json<{ nonce: string }>();
+    const extension = buildSiwxExtension(url.host, url.href, nonce);
+
+    // Merge extension into the existing 402 body
+    const originalBody = await doResponse.json<Record<string, unknown>>();
+    originalBody.extensions = { 'sign-in-with-x': extension };
+    const bodyJson = JSON.stringify(originalBody);
+
+    const headers = new Headers(doResponse.headers);
+    headers.set('PAYMENT-REQUIRED', btoa(bodyJson));
+
+    return new Response(bodyJson, { status: 402, headers });
+  } catch {
+    // If augmentation fails, return the original 402 unmodified
+    return doResponse;
+  }
 }

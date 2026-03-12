@@ -1,5 +1,5 @@
 import { PRICE_USDC_UNITS, PAYMENT_MICRO_USDC, PROOF_MAX_AGE_SECS, NETWORK, USDC_CONTRACT } from './constants';
-import { PaymentRequired, PaymentProof, Env } from './types';
+import { PaymentRequired, PaymentProof, Env, SiwxExtension } from './types';
 import { recoverAddress } from './siwe';
 
 // ERC-20 Transfer(address indexed from, address indexed to, uint256 value)
@@ -34,8 +34,8 @@ export function buildProofMessage(proof: Pick<PaymentProof, 'txHash' | 'from' | 
 
 // ── 402 response builder ───────────────────────────────────────────────────────
 
-export function build402Response(paymentAddress: string): Response {
-  const body: PaymentRequired = {
+export function build402Response(paymentAddress: string, siwxExtension?: SiwxExtension): Response {
+  const body: PaymentRequired & { extensions?: Record<string, unknown> } = {
     version: '1',
     scheme: 'exact',
     network: NETWORK,
@@ -46,6 +46,11 @@ export function build402Response(paymentAddress: string): Response {
     maxAgeSeconds: PROOF_MAX_AGE_SECS,
     description: `Pay 0.001 USDC to add ${PAYMENT_MICRO_USDC} µUSDC to your inference balance`,
   };
+
+  if (siwxExtension) {
+    body.extensions = { 'sign-in-with-x': siwxExtension };
+  }
+
   const bodyJson = JSON.stringify(body);
   // x402 spec: PAYMENT-REQUIRED header carries base64-encoded PaymentRequired JSON
   return new Response(bodyJson, {

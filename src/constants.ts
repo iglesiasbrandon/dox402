@@ -11,6 +11,11 @@ export const NETWORK               = 'base-mainnet';
 export const USDC_CONTRACT         = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; // Base Mainnet USDC
 export const AI_MODEL              = '@cf/meta/llama-3.1-8b-instruct'; // default model
 
+// SIWX supported chains (CAIP-2 format)
+export const SUPPORTED_CHAINS = [
+  { chainId: 'eip155:8453', type: 'eip191' },  // Base Mainnet (EVM)
+] as const;
+
 // Neuron consumption rates per 1M tokens (from Cloudflare Workers AI pricing)
 export const NEURON_RATES: Record<string, { in: number; out: number }> = {
   '@cf/meta/llama-3.1-8b-instruct':              { in: 25608,  out: 75147  },

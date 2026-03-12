@@ -50,6 +50,29 @@ export interface StoredNonce {
   createdAt: number;
 }
 
+// SIWX (Sign-In with X) payload — decoded from SIGN-IN-WITH-X header (base64 JSON)
+export interface SiwxPayload {
+  message: string;       // EIP-4361 message string (for EVM)
+  signature: string;     // hex-encoded signature (0x-prefixed)
+  chainId: string;       // CAIP-2 chain ID, e.g. "eip155:8453"
+  type: string;          // signature type, e.g. "eip191"
+  address: string;       // wallet address (0x-prefixed for EVM)
+}
+
+// SIWX extension advertised in 402 responses
+export interface SiwxExtension {
+  supportedChains: { chainId: string; type: string }[];
+  info: {
+    domain: string;
+    uri: string;
+    version: string;
+    statement: string;
+    nonce: string;
+    issuedAt: string;
+    expirationTime: string;
+  };
+}
+
 // Env bindings (matches wrangler.toml)
 export interface Env {
   DOX402: DurableObjectNamespace;

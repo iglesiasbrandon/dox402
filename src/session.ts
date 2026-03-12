@@ -4,17 +4,20 @@
 const TOKEN_EXPIRY_SECS = 86400; // 24 hours
 
 interface SessionPayload {
-  sub: string; // wallet address (lowercase, 0x-prefixed)
-  iat: number; // issued-at (Unix seconds)
-  exp: number; // expiry (Unix seconds)
+  sub: string;    // wallet address (lowercase, 0x-prefixed)
+  iat: number;    // issued-at (Unix seconds)
+  exp: number;    // expiry (Unix seconds)
+  chain?: string; // CAIP-2 chain ID, e.g. "eip155:8453" (absent = legacy EVM)
 }
 
 // ── Create a session token ───────────────────────────────────────────────────
-export async function createSessionToken(wallet: string, secret: string): Promise<{ token: string; expiresAt: number }> {
+export async function createSessionToken(wallet: string, secret: string, chain?: string): Promise<{ token: string; expiresAt: number }> {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + TOKEN_EXPIRY_SECS;
   const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = b64url(JSON.stringify({ sub: wallet.toLowerCase(), iat: now, exp }));
+  const claims: SessionPayload = { sub: wallet.toLowerCase(), iat: now, exp };
+  if (chain) claims.chain = chain;
+  const payload = b64url(JSON.stringify(claims));
   const signature = await hmacSign(`${header}.${payload}`, secret);
   return { token: `${header}.${payload}.${signature}`, expiresAt: exp };
 }

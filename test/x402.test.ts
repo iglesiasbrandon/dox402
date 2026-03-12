@@ -104,6 +104,32 @@ describe('build402Response', () => {
     expect(decoded.version).toBe('1');
     expect(decoded.paymentAddress).toBe(PAYMENT_ADDRESS);
   });
+
+  it('includes SIWX extension when provided', async () => {
+    const { buildSiwxExtension } = await import('../src/siwx');
+    const ext = buildSiwxExtension('dox402.com', 'https://dox402.com/infer', 'testnonce');
+    const res = build402Response(PAYMENT_ADDRESS, ext);
+    const body = await res.json() as Record<string, any>;
+    expect(body.extensions).toBeDefined();
+    expect(body.extensions['sign-in-with-x']).toBeDefined();
+    expect(body.extensions['sign-in-with-x'].supportedChains).toHaveLength(1);
+    expect(body.extensions['sign-in-with-x'].info.nonce).toBe('testnonce');
+  });
+
+  it('PAYMENT-REQUIRED header includes SIWX extension', async () => {
+    const { buildSiwxExtension } = await import('../src/siwx');
+    const ext = buildSiwxExtension('dox402.com', 'https://dox402.com/infer', 'testnonce');
+    const res = build402Response(PAYMENT_ADDRESS, ext);
+    const header = res.headers.get('PAYMENT-REQUIRED');
+    const decoded = JSON.parse(atob(header!)) as Record<string, any>;
+    expect(decoded.extensions['sign-in-with-x'].info.nonce).toBe('testnonce');
+  });
+
+  it('omits extensions when no SIWX extension provided', async () => {
+    const res = build402Response(PAYMENT_ADDRESS);
+    const body = await res.json() as Record<string, any>;
+    expect(body.extensions).toBeUndefined();
+  });
 });
 
 // ── verifyProof Tier 1 ──────────────────────────────────────────────────────────

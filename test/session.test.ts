@@ -77,4 +77,20 @@ describe('createSessionToken + verifySessionToken', () => {
   it('returns null for empty token', async () => {
     expect(await verifySessionToken('', SECRET)).toBeNull();
   });
+
+  it('includes chain claim when provided', async () => {
+    const wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    const { token } = await createSessionToken(wallet, SECRET, 'eip155:8453');
+    const payload = await verifySessionToken(token, SECRET);
+    expect(payload).not.toBeNull();
+    expect(payload!.chain).toBe('eip155:8453');
+  });
+
+  it('omits chain claim when not provided', async () => {
+    const wallet = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    const { token } = await createSessionToken(wallet, SECRET);
+    const payload = await verifySessionToken(token, SECRET);
+    expect(payload).not.toBeNull();
+    expect(payload!.chain).toBeUndefined();
+  });
 });
