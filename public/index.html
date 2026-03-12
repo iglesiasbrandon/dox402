@@ -110,16 +110,6 @@
       color: var(--text);
     }
 
-    .readme-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-    .readme-tag {
-      font-family: var(--mono);
-      font-size: 11px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 3px 8px;
-      color: var(--muted);
-    }
 
     /* Left panel footer */
     .lp-footer {
@@ -578,20 +568,6 @@ Per-request fee covers infrastructure + 15% margin
       </div>
 
       <div class="readme-section">
-        <div class="readme-h">Stack</div>
-        <div class="readme-tags">
-          <span class="readme-tag">cloudflare-workers</span>
-          <span class="readme-tag">durable-objects</span>
-          <span class="readme-tag">workers-ai</span>
-          <span class="readme-tag">x402</span>
-          <span class="readme-tag">siwe</span>
-          <span class="readme-tag">siwx</span>
-          <span class="readme-tag">base-mainnet</span>
-          <span class="readme-tag">usdc</span>
-        </div>
-      </div>
-
-      <div class="readme-section">
         <div class="readme-h">Machine-readable specs</div>
         <pre class="readme-pre"><a href="/openapi.json"><code>GET /openapi.json</code></a>         OpenAPI 3.1 specification
 <a href="/.well-known/agent.json"><code>GET /.well-known/agent.json</code></a>  A2A agent card
@@ -606,9 +582,11 @@ Per-request fee covers infrastructure + 15% margin
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
       <span style="margin:0 2px;">·</span>
-      <a href="https://www.x402.org" target="_blank">x402 protocol</a> ·
+      <a href="https://www.x402.org" target="_blank">x402</a> ·
+      <a href="https://eips.ethereum.org/EIPS/eip-4361" target="_blank">SIWE</a> ·
+      <a href="https://www.x402.org/build/sign-in-with-x" target="_blank">SIWX</a> ·
+      <a href="https://developers.cloudflare.com/workers-ai/" target="_blank">Workers AI</a> ·
       <a href="https://developers.cloudflare.com/durable-objects/" target="_blank">Durable Objects</a> ·
-      <a href="https://basescan.org" target="_blank">Basescan</a> ·
       <a href="/openapi.json">OpenAPI</a> ·
       <a href="/SKILL.md">SKILL.md</a>
     </div>
