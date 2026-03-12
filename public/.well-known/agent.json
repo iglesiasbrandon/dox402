@@ -1,0 +1,58 @@
+{
+  "name": "dox402",
+  "description": "Pay-per-use AI inference gateway using x402 payment protocol. No signup, no API key -- authenticate with your Ethereum wallet (SIWE), pay with USDC on Base Mainnet, and get streamed AI responses from 5 models.",
+  "url": "https://dox402.iglesias-brandon.workers.dev",
+  "provider": {
+    "organization": "dox402",
+    "url": "https://github.com/iglesiasbrandon/dox402"
+  },
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true
+  },
+  "authentication": {
+    "schemes": ["bearer"],
+    "instructions": "1. GET /auth/nonce?wallet=0xYOUR_ADDRESS to get a one-time nonce. 2. Construct an EIP-4361 (SIWE) message containing the nonce and sign it with personal_sign. 3. POST /auth/login with {message, signature} to receive a JWT session token (valid 24h). Alternative: pass a SIGN-IN-WITH-X header (base64-encoded SiwxPayload) on POST /infer for single-request auth without a separate login step."
+  },
+  "defaultInputModes": ["application/json"],
+  "defaultOutputModes": ["text/event-stream", "application/json"],
+  "skills": [
+    {
+      "id": "infer",
+      "name": "AI Inference",
+      "description": "Run AI text generation with conversation memory. Supports Llama 3.1 8B, Llama 3.3 70B, Gemma 3 12B, Mistral 7B, DeepSeek R1 32B. Returns SSE stream. Costs ~8-13 uUSDC per request depending on model and length.",
+      "inputModes": ["application/json"],
+      "outputModes": ["text/event-stream"]
+    },
+    {
+      "id": "deposit",
+      "name": "Deposit Credits",
+      "description": "Top up inference credit balance by submitting an on-chain USDC payment proof. Minimum 0.001 USDC (1000 uUSDC credits).",
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"]
+    },
+    {
+      "id": "balance",
+      "name": "Check Balance",
+      "description": "Query current credit balance in uUSDC, total deposited, total spent, and lifetime request count.",
+      "inputModes": [],
+      "outputModes": ["application/json"]
+    },
+    {
+      "id": "payment-info",
+      "name": "Payment Information",
+      "description": "Get the USDC payment address, network (Base Mainnet), contract address, and minimum top-up amount. No authentication required.",
+      "inputModes": [],
+      "outputModes": ["application/json"]
+    }
+  ],
+  "documentationUrl": "/openapi.json",
+  "x-payment": {
+    "protocol": "x402",
+    "network": "base-mainnet",
+    "asset": "USDC",
+    "usdcContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "minimumPayment": "0.001 USDC (1000 uUSDC credits)",
+    "paymentInfoEndpoint": "/payment-info"
+  }
+}

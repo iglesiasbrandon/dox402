@@ -1,0 +1,106 @@
+{
+  "version": "0.1.0",
+  "name": "dox402",
+  "description": "Pay-per-use AI inference gateway. Authenticate with Ethereum wallet, pay with USDC on Base Mainnet, get streamed AI responses.",
+  "url": "https://dox402.iglesias-brandon.workers.dev",
+  "openapi": "/openapi.json",
+  "authentication": {
+    "type": "custom",
+    "description": "SIWE (EIP-4361) wallet authentication. See the 'authenticate' flow below, or use the SIGN-IN-WITH-X header for single-request auth."
+  },
+  "flows": [
+    {
+      "name": "authenticate",
+      "description": "Authenticate with an Ethereum wallet using SIWE (EIP-4361) to obtain a 24-hour session token",
+      "steps": [
+        {
+          "endpoint": "/auth/nonce",
+          "method": "GET",
+          "description": "Request a one-time nonce for your wallet address",
+          "parameters": { "wallet": "$walletAddress" },
+          "output": { "nonce": "$.nonce" }
+        },
+        {
+          "endpoint": "/auth/login",
+          "method": "POST",
+          "description": "Construct an EIP-4361 message with the nonce, sign it with personal_sign, and submit both",
+          "body": {
+            "message": "$siweMessage",
+            "signature": "$walletSignature"
+          },
+          "output": {
+            "token": "$.token",
+            "expiresAt": "$.expiresAt"
+          }
+        }
+      ]
+    },
+    {
+      "name": "infer",
+      "description": "Run AI text generation. Returns an SSE stream. Requires authentication and a positive credit balance.",
+      "requires": ["authenticate"],
+      "steps": [
+        {
+          "endpoint": "/infer",
+          "method": "POST",
+          "headers": { "Authorization": "Bearer $token" },
+          "body": {
+            "prompt": "$prompt",
+            "walletAddress": "$walletAddress",
+            "model": "$model",
+            "maxTokens": "$maxTokens"
+          },
+          "description": "Returns 200 with SSE stream if balance > 0. Returns 402 with payment instructions if balance is zero."
+        }
+      ]
+    },
+    {
+      "name": "check-balance",
+      "description": "Query current credit balance and usage statistics",
+      "requires": ["authenticate"],
+      "steps": [
+        {
+          "endpoint": "/balance",
+          "method": "GET",
+          "headers": { "Authorization": "Bearer $token" },
+          "output": {
+            "balance": "$.balance",
+            "totalDeposited": "$.totalDepositedMicroUSDC",
+            "totalSpent": "$.totalSpentMicroUSDC",
+            "totalRequests": "$.totalRequests"
+          }
+        }
+      ]
+    },
+    {
+      "name": "deposit",
+      "description": "Top up credit balance by submitting an on-chain USDC payment proof",
+      "requires": ["authenticate"],
+      "steps": [
+        {
+          "endpoint": "/payment-info",
+          "method": "GET",
+          "description": "Get the USDC payment address and network details",
+          "output": {
+            "paymentAddress": "$.paymentAddress",
+            "usdcContract": "$.usdcContract"
+          }
+        },
+        {
+          "endpoint": "/deposit",
+          "method": "POST",
+          "headers": { "Authorization": "Bearer $token" },
+          "body": {
+            "walletAddress": "$walletAddress",
+            "proof": "$base64EncodedPaymentProof"
+          },
+          "description": "Submit proof of on-chain USDC transfer. The proof must be signed by the wallet and the transaction must be confirmed on Base Mainnet.",
+          "output": {
+            "credited": "$.credited",
+            "balance": "$.balance"
+          }
+        }
+      ]
+    }
+  ]
+}

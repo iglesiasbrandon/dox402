@@ -1,0 +1,588 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "dox402 - Pay-Per-Use AI Inference Gateway",
+    "version": "1.0.0",
+    "description": "Pay-per-use AI inference via the x402 payment protocol. No signup, no API key — authenticate with your Ethereum wallet (SIWE/EIP-4361), pay with USDC on Base Mainnet, and get streamed AI responses. Each wallet gets its own Durable Object instance with isolated balance, history, and rate limiting.",
+    "contact": {
+      "url": "https://github.com/iglesiasbrandon/dox402"
+    },
+    "license": {
+      "name": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://dox402.iglesias-brandon.workers.dev",
+      "description": "Production"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Liveness probe",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "const": "ok" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payment-info": {
+      "get": {
+        "summary": "Payment address and network details",
+        "operationId": "getPaymentInfo",
+        "description": "Returns the USDC receiving address, network, and minimum top-up amount. Use this to construct on-chain payments.",
+        "responses": {
+          "200": {
+            "description": "Payment configuration",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PaymentInfo" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/nonce": {
+      "get": {
+        "summary": "Generate one-time nonce for SIWE signing",
+        "operationId": "getAuthNonce",
+        "description": "Step 1 of authentication: request a nonce, then construct an EIP-4361 (SIWE) message containing this nonce for wallet signing.",
+        "parameters": [
+          {
+            "name": "wallet",
+            "in": "query",
+            "required": true,
+            "description": "Ethereum wallet address (0x + 40 hex chars)",
+            "schema": {
+              "type": "string",
+              "pattern": "^0x[0-9a-fA-F]{40}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nonce generated (valid for 5 minutes, single use)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["nonce"],
+                  "properties": {
+                    "nonce": {
+                      "type": "string",
+                      "description": "32-byte hex nonce (64 chars)"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid wallet address format",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "summary": "Verify SIWE signature and issue session token",
+        "operationId": "postAuthLogin",
+        "description": "Step 2 of authentication: submit the signed EIP-4361 message. On success, receive a JWT session token valid for 24 hours.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["message", "signature"],
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "description": "EIP-4361 (SIWE) message string containing the nonce from /auth/nonce"
+                  },
+                  "signature": {
+                    "type": "string",
+                    "description": "EIP-191 personal_sign hex signature (0x-prefixed)"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["token", "expiresAt"],
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "description": "JWT session token (HMAC-SHA256 signed)"
+                    },
+                    "expiresAt": {
+                      "type": "integer",
+                      "description": "Token expiry as Unix timestamp (seconds)"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON body or missing fields",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Signature verification failed or nonce invalid",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/infer": {
+      "post": {
+        "summary": "Run AI inference (streamed)",
+        "operationId": "postInfer",
+        "description": "Submit a prompt for AI text generation. Returns a Server-Sent Events stream. Requires authentication and a positive credit balance. If balance is zero and no payment proof is provided, returns 402 with payment instructions and SIWX extension for auth discovery.",
+        "security": [
+          { "BearerAuth": [] },
+          { "SiwxAuth": [] }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/InferRequest" }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "PAYMENT-SIGNATURE",
+            "in": "header",
+            "required": false,
+            "description": "Base64-encoded PaymentProof JSON. Include when topping up balance alongside inference.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Inference stream",
+            "headers": {
+              "X-Balance": {
+                "description": "Pre-deduction credit balance in uUSDC",
+                "schema": { "type": "string" }
+              },
+              "X-Session-Token": {
+                "description": "New session token (only present when authenticated via SIWX header)",
+                "schema": { "type": "string" }
+              },
+              "X-Session-Expires": {
+                "description": "Session token expiry as Unix timestamp (only present when authenticated via SIWX header)",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SSE stream. Each event is `data: {\"response\":\"...chunk...\"}` followed by `data: [DONE]` when complete."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session token / SIWX header",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "402": {
+            "description": "Insufficient balance. Response includes payment instructions and SIWX auth extension.",
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded PaymentRequired JSON (x402 spec)",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PaymentRequired" }
+              }
+            }
+          },
+          "403": {
+            "description": "walletAddress in body does not match authenticated session",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded (60 requests per minute per wallet)",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the rate limit window resets",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/deposit": {
+      "post": {
+        "summary": "Top up credit balance with USDC payment proof",
+        "operationId": "postDeposit",
+        "description": "Submit an on-chain USDC payment proof to add credits to your balance without running inference.",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DepositRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Deposit successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean", "const": true },
+                    "credited": { "type": "integer", "description": "uUSDC credited from this deposit" },
+                    "balance": { "type": "integer", "description": "New total balance in uUSDC" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment proof verification failed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/balance": {
+      "get": {
+        "summary": "Get credit balance and usage stats",
+        "operationId": "getBalance",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Balance and usage statistics",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BalanceResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/history": {
+      "get": {
+        "summary": "Get conversation history",
+        "operationId": "getHistory",
+        "description": "Returns the stored conversation messages for this wallet. Capped at 20 messages (10 exchanges).",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Conversation history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "history": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/ConversationMessage" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Clear conversation history",
+        "operationId": "deleteHistory",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "History cleared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean", "const": true }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Session token obtained via POST /auth/login. Valid for 24 hours. Flow: 1) GET /auth/nonce?wallet=0x... 2) Sign EIP-4361 message with wallet 3) POST /auth/login with {message, signature}"
+      },
+      "SiwxAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "SIGN-IN-WITH-X",
+        "description": "Base64-encoded SIWX payload for single-request authentication (x402 SIWX spec). Contains {message, signature, chainId, type, address}. Server returns X-Session-Token header for subsequent requests."
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" }
+        }
+      },
+      "InferRequest": {
+        "type": "object",
+        "required": ["prompt", "walletAddress"],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "The user prompt for AI text generation"
+          },
+          "walletAddress": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{40}$",
+            "description": "Must match the authenticated wallet address"
+          },
+          "maxTokens": {
+            "type": "integer",
+            "default": 512,
+            "maximum": 2048,
+            "description": "Maximum tokens to generate"
+          },
+          "model": {
+            "type": "string",
+            "default": "@cf/meta/llama-3.1-8b-instruct",
+            "enum": [
+              "@cf/meta/llama-3.1-8b-instruct",
+              "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+              "@cf/google/gemma-3-12b-it",
+              "@cf/mistral/mistral-7b-instruct-v0.2",
+              "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"
+            ],
+            "description": "Workers AI model ID"
+          }
+        }
+      },
+      "DepositRequest": {
+        "type": "object",
+        "required": ["walletAddress", "proof"],
+        "properties": {
+          "walletAddress": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{40}$",
+            "description": "Must match the authenticated wallet address"
+          },
+          "proof": {
+            "type": "string",
+            "description": "Base64-encoded PaymentProof JSON"
+          }
+        }
+      },
+      "PaymentRequired": {
+        "type": "object",
+        "description": "x402 payment requirements returned with HTTP 402",
+        "properties": {
+          "version": { "type": "string", "const": "1" },
+          "scheme": { "type": "string", "const": "exact" },
+          "network": { "type": "string", "example": "base-mainnet" },
+          "paymentAddress": { "type": "string", "description": "USDC receiving address" },
+          "asset": { "type": "string", "const": "USDC" },
+          "amount": { "type": "string", "description": "USDC amount in smallest unit (6 decimals). 1000 = $0.001" },
+          "balanceMicroUSDC": { "type": "integer", "description": "uUSDC credits added per payment" },
+          "maxAgeSeconds": { "type": "integer", "description": "Payment proof validity window" },
+          "description": { "type": "string" },
+          "extensions": {
+            "type": "object",
+            "properties": {
+              "sign-in-with-x": { "$ref": "#/components/schemas/SiwxExtension" }
+            }
+          }
+        }
+      },
+      "PaymentProof": {
+        "type": "object",
+        "description": "Proof of on-chain USDC payment (submitted via PAYMENT-SIGNATURE header or in deposit body)",
+        "required": ["txHash", "from", "amount", "timestamp", "signature"],
+        "properties": {
+          "txHash": { "type": "string", "description": "On-chain transaction hash" },
+          "from": { "type": "string", "description": "Payer wallet address (0x-prefixed)" },
+          "amount": { "type": "string", "description": "USDC amount in smallest unit" },
+          "timestamp": { "type": "integer", "description": "Unix seconds when proof was constructed" },
+          "signature": { "type": "string", "description": "EIP-191 personal_sign over canonical proof message" }
+        }
+      },
+      "SiwxPayload": {
+        "type": "object",
+        "description": "SIGN-IN-WITH-X header payload (base64-encoded JSON)",
+        "required": ["message", "signature", "chainId", "type", "address"],
+        "properties": {
+          "message": { "type": "string", "description": "EIP-4361 message string" },
+          "signature": { "type": "string", "description": "Hex-encoded EIP-191 signature (0x-prefixed)" },
+          "chainId": { "type": "string", "example": "eip155:8453", "description": "CAIP-2 chain identifier" },
+          "type": { "type": "string", "example": "eip191", "description": "Signature type" },
+          "address": { "type": "string", "description": "Wallet address (0x-prefixed for EVM)" }
+        }
+      },
+      "SiwxExtension": {
+        "type": "object",
+        "description": "SIWX auth discovery extension included in 402 responses",
+        "properties": {
+          "supportedChains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chainId": { "type": "string", "example": "eip155:8453" },
+                "type": { "type": "string", "example": "eip191" }
+              }
+            }
+          },
+          "info": {
+            "type": "object",
+            "properties": {
+              "domain": { "type": "string" },
+              "uri": { "type": "string" },
+              "version": { "type": "string" },
+              "statement": { "type": "string" },
+              "nonce": { "type": "string", "description": "One-time nonce for SIWE message construction" },
+              "issuedAt": { "type": "string", "format": "date-time" },
+              "expirationTime": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      },
+      "BalanceResponse": {
+        "type": "object",
+        "properties": {
+          "balance": { "type": "integer", "description": "Current credit balance in uUSDC" },
+          "totalDepositedMicroUSDC": { "type": "integer" },
+          "totalSpentMicroUSDC": { "type": "integer" },
+          "totalRequests": { "type": "integer" }
+        }
+      },
+      "ConversationMessage": {
+        "type": "object",
+        "properties": {
+          "role": { "type": "string", "enum": ["user", "assistant"] },
+          "content": { "type": "string" },
+          "meta": {
+            "type": "object",
+            "description": "Usage metadata (assistant messages only)",
+            "properties": {
+              "cost": { "type": "number", "description": "uUSDC charged for this response" },
+              "model": { "type": "string", "description": "Workers AI model ID used" }
+            }
+          }
+        }
+      },
+      "PaymentInfo": {
+        "type": "object",
+        "properties": {
+          "paymentAddress": { "type": "string", "description": "USDC receiving address on Base Mainnet" },
+          "network": { "type": "string", "example": "base-mainnet" },
+          "asset": { "type": "string", "const": "USDC" },
+          "usdcContract": { "type": "string", "description": "USDC ERC-20 contract address on Base" },
+          "minimumMicroUSDC": { "type": "integer", "description": "Minimum top-up amount in uUSDC" }
+        }
+      }
+    }
+  }
+}
