@@ -173,6 +173,43 @@ describe('verifyProof — Tier 1 (structural)', () => {
   });
 });
 
+// ── verifyProof — MOCK_PAYMENTS production guard ────────────────────────────
+
+describe('verifyProof — MOCK_PAYMENTS production guard', () => {
+  it('honors MOCK_PAYMENTS when hostname is localhost', async () => {
+    const result = await verifyProof(makeProof(), WALLET, makeEnv(), { hostname: 'localhost' });
+    expect(result.valid).toBe(true);
+  });
+
+  it('honors MOCK_PAYMENTS when hostname is 127.0.0.1', async () => {
+    const result = await verifyProof(makeProof(), WALLET, makeEnv(), { hostname: '127.0.0.1' });
+    expect(result.valid).toBe(true);
+  });
+
+  it('ignores MOCK_PAYMENTS when hostname is a production domain', async () => {
+    const env = makeEnv({ MOCK_PAYMENTS: 'true', BASE_RPC_URL: '' });
+    const result = await verifyProof(makeProof(), WALLET, env, {
+      hostname: 'inference-gate.workers.dev',
+    });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toContain('BASE_RPC_URL');
+  });
+
+  it('ignores MOCK_PAYMENTS for custom production domains', async () => {
+    const env = makeEnv({ MOCK_PAYMENTS: 'true', BASE_RPC_URL: '' });
+    const result = await verifyProof(makeProof(), WALLET, env, {
+      hostname: 'api.dox402.com',
+    });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toContain('BASE_RPC_URL');
+  });
+
+  it('still works without hostname (backward compat for unit tests)', async () => {
+    const result = await verifyProof(makeProof(), WALLET, makeEnv());
+    expect(result.valid).toBe(true);
+  });
+});
+
 // ── verifyProof — Signature verification ─────────────────────────────────────
 
 describe('verifyProof — Signature verification', () => {

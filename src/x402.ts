@@ -7,6 +7,7 @@ import { recoverAddress } from './siwe';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const RPC_TIMEOUT_MS = 12_000;
 const RPC_MAX_RETRIES = 4;
+const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 interface EthLog {
   address: string;
@@ -68,7 +69,7 @@ export async function verifyProof(
   proof: PaymentProof,
   walletAddress: string,
   env: Env,
-  opts?: { skipSignature?: boolean },
+  opts?: { skipSignature?: boolean; hostname?: string },
 ): Promise<{ valid: boolean; reason?: string; amount?: number }> {
 
   // ── Tier 1: structural checks (fast, no I/O) ──────────────────────────────
@@ -83,8 +84,15 @@ export async function verifyProof(
   if (BigInt(proof.amount) < BigInt(PRICE_USDC_UNITS))
     return { valid: false, reason: 'insufficient amount' };
 
-  // MOCK_PAYMENTS bypasses signature + RPC checks in local dev — must never be set in production
-  if (env.MOCK_PAYMENTS === 'true') return { valid: true };
+  // MOCK_PAYMENTS bypasses signature + RPC checks — only honored on localhost
+  if (env.MOCK_PAYMENTS === 'true') {
+    if (opts?.hostname && !LOCAL_HOSTNAMES.has(opts.hostname)) {
+      console.warn('[x402] MOCK_PAYMENTS is set but hostname is "%s" — ignoring', opts.hostname);
+      // Fall through to real verification
+    } else {
+      return { valid: true };
+    }
+  }
 
   // EIP-191 signature verification — proves the wallet owner constructed this proof.
   // Skipped for authenticated deposits where Bearer token already establishes identity

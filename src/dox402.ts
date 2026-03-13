@@ -110,7 +110,9 @@ export class InferenceGate extends DurableObject<Env> {
     }
 
     // Step 6: Tier 1 structural + Tier 2 on-chain verification
-    const check = await verifyProof(proof, this.walletAddress, this.env);
+    const check = await verifyProof(proof, this.walletAddress, this.env, {
+      hostname: new URL(request.url).hostname,
+    });
     if (!check.valid) {
       return new Response(JSON.stringify({ error: check.reason }), {
         status: 402,
@@ -276,7 +278,10 @@ export class InferenceGate extends DurableObject<Env> {
 
     // Skip signature check: deposit is already behind Bearer auth (router verified identity)
     // and on-chain receipt.from confirms the sender — proof signature adds no security value.
-    const check = await verifyProof(proof, this.walletAddress, this.env, { skipSignature: true });
+    const check = await verifyProof(proof, this.walletAddress, this.env, {
+      skipSignature: true,
+      hostname: new URL(request.url).hostname,
+    });
     if (!check.valid) {
       return Response.json({ error: check.reason }, { status: 402 });
     }
