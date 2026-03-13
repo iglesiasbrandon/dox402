@@ -478,7 +478,7 @@
 
     <div class="readme">
 
-      <p>Pay-per-use AI inference via the x402 payment protocol. No signup, no API key — sign in with your wallet via <a href="https://eips.ethereum.org/EIPS/eip-4361" target="_blank">EIP-4361 (SIWE)</a> or the <a href="https://www.x402.org" target="_blank">SIWX</a> header for single-request auth, then pay and prompt.</p>
+      <p>Pay-per-use AI inference built on <a href="https://developers.cloudflare.com/workers/" target="_blank">Cloudflare Workers</a> and <a href="https://developers.cloudflare.com/durable-objects/" target="_blank">Durable Objects</a>. Authenticate via <a href="https://eips.ethereum.org/EIPS/eip-4361" target="_blank">EIP-4361 (SIWE)</a>, pay in USDC on Base through the <a href="https://www.x402.org" target="_blank">x402 protocol</a>, and start prompting — no signup, no API key.</p>
 
       <div class="readme-section">
         <div class="readme-h">Why Durable Objects</div>
@@ -558,7 +558,6 @@ DELETE /history   clear conversation</pre>
       <div class="readme-section">
         <div class="readme-h">Pricing</div>
         <pre class="readme-pre">0.001 USDC → 1,000 credits (µUSDC)
-Per-request fee covers infrastructure + 15% margin
 
   Llama 3.1 8B     ~8–10 credits/request
   Llama 3.3 70B    ~9–13 credits/request
@@ -586,6 +585,7 @@ Per-request fee covers infrastructure + 15% margin
       <a href="https://eips.ethereum.org/EIPS/eip-4361" target="_blank">SIWE</a> ·
       <a href="https://www.x402.org/build/sign-in-with-x" target="_blank">SIWX</a> ·
       <a href="https://developers.cloudflare.com/workers-ai/" target="_blank">Workers AI</a> ·
+      <a href="https://developers.cloudflare.com/workers/" target="_blank">Workers</a> ·
       <a href="https://developers.cloudflare.com/durable-objects/" target="_blank">Durable Objects</a> ·
       <a href="/openapi.json">OpenAPI</a> ·
       <a href="/SKILL.md">SKILL.md</a>
@@ -969,6 +969,23 @@ Per-request fee covers infrastructure + 15% margin
     disconnect();
     showErr('Session expired — please sign in again.');
   }
+
+  // ── Session expiry + idle timeout ──────────────────────────────────────────
+  const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+  let lastActivity = Date.now();
+
+  ['click', 'keydown', 'scroll', 'mousemove'].forEach(evt =>
+    document.addEventListener(evt, () => { lastActivity = Date.now(); }, { passive: true })
+  );
+
+  setInterval(() => {
+    if (!sessionToken) return;
+    if (!isSessionValid()) { handleSessionExpired(); return; }
+    if (Date.now() - lastActivity > IDLE_TIMEOUT_MS) {
+      handleSessionExpired();
+      showErr('Session timed out due to inactivity — please sign in again.');
+    }
+  }, 60_000); // check every 60 s
 
   // ── Credit estimation ──────────────────────────────────────────────────────
   function updateEstimate() {
