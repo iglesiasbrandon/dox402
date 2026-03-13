@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseSSE, computeCostMicroUSDC } from '../src/billing';
+import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from '../src/billing';
 import { AI_MODEL, MICRO_USDC_PER_NEURON, NEURON_RATES, OVERHEAD_MICRO_USDC, TARGET_MARGIN } from '../src/constants';
 
 // ── parseSSE ──────────────────────────────────────────────────────────────────
@@ -148,5 +148,106 @@ describe('computeCostMicroUSDC', () => {
       const margin = (cost - cogs) / cost;
       expect(margin).toBeGreaterThanOrEqual(TARGET_MARGIN);
     }
+  });
+});
+
+// ── validateInferenceResult ─────────────────────────────────────────────────
+
+describe('validateInferenceResult', () => {
+  it('accepts normal response with text', () => {
+    const result = validateInferenceResult({ text: 'Hello, how can I help?', usage: null });
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts response with text and usage', () => {
+    const result = validateInferenceResult({
+      text: 'Hello',
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects empty text', () => {
+    const result = validateInferenceResult({ text: '', usage: null });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('empty_response');
+  });
+
+  it('rejects whitespace-only text', () => {
+    const result = validateInferenceResult({ text: '   \n\t  ', usage: null });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('empty_response');
+  });
+
+  it('rejects JSON error object', () => {
+    const result = validateInferenceResult({
+      text: '{"error":"Internal server error"}',
+      usage: null,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('ai_error');
+  });
+
+  it('rejects JSON error with model unavailable message', () => {
+    const result = validateInferenceResult({
+      text: '{"error":"model @cf/meta/llama-3.1-8b-instruct is currently unavailable"}',
+      usage: null,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('ai_error');
+  });
+
+  it('accepts normal text that happens to contain the word "error"', () => {
+    const result = validateInferenceResult({
+      text: 'A 404 error occurs when a page is not found. This is a common HTTP status code that web developers encounter.',
+      usage: null,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects short text matching "internal server error" sentinel', () => {
+    const result = validateInferenceResult({ text: 'Internal server error', usage: null });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('ai_error_text');
+  });
+
+  it('rejects short text matching "service unavailable" sentinel', () => {
+    const result = validateInferenceResult({ text: 'service unavailable', usage: null });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('ai_error_text');
+  });
+
+  it('rejects short text matching "model not available" sentinel', () => {
+    const result = validateInferenceResult({ text: 'Model not available', usage: null });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('ai_error_text');
+  });
+
+  it('accepts long text that contains error sentinel (length > 100)', () => {
+    const longText = 'When you encounter an "internal server error", it usually means ' +
+      'the server encountered an unexpected condition. ' +
+      'This can happen for various reasons including misconfiguration or resource exhaustion.';
+    const result = validateInferenceResult({ text: longText, usage: null });
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts legitimate short response like "Yes"', () => {
+    const result = validateInferenceResult({ text: 'Yes', usage: null });
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts legitimate short response like "42"', () => {
+    const result = validateInferenceResult({ text: '42', usage: null });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects "rate limit exceeded" short text', () => {
+    const result = validateInferenceResult({ text: 'rate limit exceeded', usage: null });
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects "context length exceeded" short text', () => {
+    const result = validateInferenceResult({ text: 'context length exceeded', usage: null });
+    expect(result.ok).toBe(false);
   });
 });

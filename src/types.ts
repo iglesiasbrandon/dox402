@@ -80,6 +80,7 @@ export interface Env {
   PAYMENT_ADDRESS: string;
   BASE_RPC_URL: string;
   NETWORK: string;
-  MOCK_PAYMENTS?: string;  // set to "true" in local dev only — skips Tier 2 RPC check
-  SESSION_SECRET: string;  // HMAC-SHA256 key for SIWE session tokens (set via wrangler secret put)
+  MOCK_PAYMENTS?: string;       // set to "true" in local dev only — skips Tier 2 RPC check
+  MOCK_AI_BEHAVIOR?: string;    // local dev only: success | empty | error | stream_error
+  SESSION_SECRET: string;       // HMAC-SHA256 key for SIWE session tokens (set via wrangler secret put)
 }

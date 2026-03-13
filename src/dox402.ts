@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { build402Response, verifyProof } from './x402';
 import { runInference } from './ai';
 import { AI_MODEL, MAX_HISTORY_MESSAGES, PAYMENT_MICRO_USDC, RATE_LIMIT_PER_MINUTE } from './constants';
-import { parseSSE, computeCostMicroUSDC } from './billing';
+import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billing';
 import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, StoredNonce } from './types';
 
 export class InferenceGate extends DurableObject<Env> {
@@ -158,10 +158,9 @@ export class InferenceGate extends DurableObject<Env> {
     try {
       stream = await runInference(this.env, messages, body.maxTokens, body.model);
     } catch (err: unknown) {
-      // If AI binding is missing (local dev), return a mock stream
+      // If AI binding is missing (local dev), return a configurable mock stream
       if (!this.env.AI) {
-        const mock = `data: {"response":"[local-dev mock — deploy to Cloudflare for real inference]"}\ndata: {"usage":{"prompt_tokens":10,"completion_tokens":12}}\n\ndata: [DONE]\n\n`;
-        stream = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(mock)); c.close(); } });
+        stream = buildMockStream(this.env.MOCK_AI_BEHAVIOR ?? 'success');
       } else {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[InferenceGate] AI inference failed:', msg);
@@ -178,6 +177,7 @@ export class InferenceGate extends DurableObject<Env> {
       const writer = writable.getWriter();
       const reader = stream.getReader();
       let accumulated = '';
+      let streamErrored = false;
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -186,11 +186,37 @@ export class InferenceGate extends DurableObject<Env> {
           await writer.write(value);
         }
       } catch (e) {
-        await writer.abort(e as Error);
-        throw e;
+        streamErrored = true;
+        console.error('[InferenceGate] Stream read error:', e instanceof Error ? e.message : String(e));
+        // Try to send a terminal error event to the client
+        try {
+          const errPayload = JSON.stringify({
+            error: 'stream_error',
+            detail: (e instanceof Error ? e.message : String(e)).slice(0, 200),
+          });
+          await writer.write(new TextEncoder().encode(`data: ${errPayload}\n\ndata: [DONE]\n\n`));
+          await writer.close();
+        } catch {
+          try { await writer.abort(e as Error); } catch { /* ignore */ }
+        }
       }
 
       const { text: responseText, usage } = parseSSE(accumulated);
+
+      // Validate inference result before billing — skip charges on failed responses
+      const validation = streamErrored
+        ? { ok: false, reason: 'stream_error' }
+        : validateInferenceResult({ text: responseText, usage });
+
+      if (!validation.ok) {
+        console.error(`[InferenceGate] Skipping billing: ${validation.reason}`);
+        await this.ctx.storage.put('lastUsedAt', Date.now());
+        const requests = (await this.ctx.storage.get<number>('totalRequests')) ?? 0;
+        await this.ctx.storage.put('totalRequests', requests + 1);
+        const failedRequests = (await this.ctx.storage.get<number>('totalFailedRequests')) ?? 0;
+        await this.ctx.storage.put('totalFailedRequests', failedRequests + 1);
+        return; // no billing, no history
+      }
 
       // Compute char counts for fallback billing when Workers AI returns zero token counts
       const inputChars  = messages.reduce((sum, m) => sum + m.content.length, 0);
@@ -285,17 +311,19 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   private async handleBalance(): Promise<Response> {
-    const [balance, totalDeposited, totalSpent, totalRequests] = await Promise.all([
+    const [balance, totalDeposited, totalSpent, totalRequests, totalFailedRequests] = await Promise.all([
       this.ctx.storage.get<number>('balance'),
       this.ctx.storage.get<number>('totalDepositedMicroUSDC'),
       this.ctx.storage.get<number>('totalSpentMicroUSDC'),
       this.ctx.storage.get<number>('totalRequests'),
+      this.ctx.storage.get<number>('totalFailedRequests'),
     ]);
     return Response.json({
       balance:                  balance ?? 0,
       totalDepositedMicroUSDC:  totalDeposited ?? 0,
       totalSpentMicroUSDC:      totalSpent ?? 0,
       totalRequests:            totalRequests ?? 0,
+      totalFailedRequests:      totalFailedRequests ?? 0,
     }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
@@ -364,5 +392,36 @@ export class InferenceGate extends DurableObject<Env> {
     nonces.splice(idx, 1);
     await this.ctx.storage.put('siwe:nonces', nonces);
     return Response.json({ valid: true });
+  }
+}
+
+// ── Local dev mock stream builder ─────────────────────────────────────────────
+// Controlled via MOCK_AI_BEHAVIOR env var: success | empty | error | stream_error
+function buildMockStream(behavior: string): ReadableStream {
+  const enc = (s: string) => new TextEncoder().encode(s);
+  switch (behavior) {
+    case 'empty':
+      return new ReadableStream({ start(c) { c.enqueue(enc('data: [DONE]\n\n')); c.close(); } });
+    case 'error':
+      return new ReadableStream({
+        start(c) {
+          c.enqueue(enc('data: {"error":"Internal server error"}\n\ndata: [DONE]\n\n'));
+          c.close();
+        },
+      });
+    case 'stream_error':
+      return new ReadableStream({
+        start(c) {
+          c.enqueue(enc('data: {"response":"Starting to respond..."}\n\n'));
+          setTimeout(() => c.error(new Error('mock stream error')), 10);
+        },
+      });
+    default: // 'success'
+      return new ReadableStream({
+        start(c) {
+          c.enqueue(enc('data: {"response":"[local-dev mock — deploy to Cloudflare for real inference]"}\ndata: {"usage":{"prompt_tokens":10,"completion_tokens":12}}\n\ndata: [DONE]\n\n'));
+          c.close();
+        },
+      });
   }
 }
