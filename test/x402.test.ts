@@ -366,7 +366,7 @@ describe('verifyProof — Tier 2 (on-chain)', () => {
     expect(result.reason).toContain('RPC error');
   });
 
-  it('handles fetch timeout/network failure', async () => {
+  it('handles fetch timeout/network failure with grace mode', async () => {
     vi.useFakeTimers();
     (globalThis.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network error'));
     const promise = verifyProof(makeProof(), WALLET, env);
@@ -376,7 +376,86 @@ describe('verifyProof — Tier 2 (on-chain)', () => {
     }
     const result = await promise;
     vi.useRealTimers();
+    // Grace mode: Tier 1 passed, RPC connectivity failure → provisional
+    expect(result.valid).toBe(true);
+    expect(result.provisional).toBe(true);
+    expect(result.pendingProof).toBeDefined();
+    expect(result.amount).toBe(1000);
+  });
+});
+
+// ── verifyProof — Grace mode (RPC connectivity failure) ─────────────────────
+
+describe('verifyProof — Grace mode (RPC connectivity failure)', () => {
+  const env = makeEnv({ MOCK_PAYMENTS: undefined });
+
+  beforeEach(() => { vi.stubGlobal('fetch', vi.fn()); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('returns provisional=true when all RPC attempts time out', async () => {
+    vi.useFakeTimers();
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('timeout'));
+    const promise = verifyProof(makeProof(), WALLET, env);
+    for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(15_000);
+    const result = await promise;
+    vi.useRealTimers();
+
+    expect(result.valid).toBe(true);
+    expect(result.provisional).toBe(true);
+    expect(result.pendingProof).toBeDefined();
+    expect(result.pendingProof!.txHash).toBe('0x' + 'a'.repeat(64));
+  });
+
+  it('returns provisional=true when all attempts are rate-limited', async () => {
+    vi.useFakeTimers();
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      json: async () => ({ jsonrpc: '2.0', id: 1, error: { message: 'rate limit exceeded' } }),
+    });
+    const promise = verifyProof(makeProof(), WALLET, env);
+    for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(15_000);
+    const result = await promise;
+    vi.useRealTimers();
+
+    expect(result.valid).toBe(true);
+    expect(result.provisional).toBe(true);
+  });
+
+  it('does NOT return provisional for non-connectivity RPC errors', async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      json: async () => ({ jsonrpc: '2.0', id: 1, error: { message: 'internal server error' } }),
+    });
+    const result = await verifyProof(makeProof(), WALLET, env);
+
     expect(result.valid).toBe(false);
-    expect(result.reason).toContain('timed out');
+    expect(result.provisional).toBeUndefined();
+    expect(result.reason).toContain('RPC error');
+  });
+
+  it('does NOT return provisional when Tier 1 fails (expired proof)', async () => {
+    const expiredProof = makeProof({ timestamp: Math.floor(Date.now() / 1000) - 600 });
+    const result = await verifyProof(expiredProof, WALLET, env);
+
+    expect(result.valid).toBe(false);
+    expect(result.provisional).toBeUndefined();
+  });
+
+  it('returns proof.amount as the provisional amount', async () => {
+    vi.useFakeTimers();
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('timeout'));
+    const promise = verifyProof(makeProof({ amount: '5000' }), WALLET, env);
+    for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(15_000);
+    const result = await promise;
+    vi.useRealTimers();
+
+    expect(result.amount).toBe(5000);
+    expect(result.provisional).toBe(true);
+  });
+
+  it('does NOT return provisional when BASE_RPC_URL is missing', async () => {
+    const noRpcEnv = makeEnv({ MOCK_PAYMENTS: undefined, BASE_RPC_URL: '' });
+    const result = await verifyProof(makeProof(), WALLET, noRpcEnv);
+
+    expect(result.valid).toBe(false);
+    expect(result.provisional).toBeUndefined();
   });
 });

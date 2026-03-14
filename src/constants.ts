@@ -11,6 +11,12 @@ export const NETWORK               = 'base-mainnet';
 export const USDC_CONTRACT         = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; // Base Mainnet USDC
 export const AI_MODEL              = '@cf/meta/llama-3.1-8b-instruct'; // default model
 
+// Grace mode — provisional credit on RPC failure
+export const GRACE_MAX_PROVISIONAL_MICRO_USDC = 5000;  // max outstanding provisional credit per wallet ($0.005)
+export const GRACE_MAX_PENDING = 5;                      // max pending re-verifications per wallet
+export const GRACE_INITIAL_RETRY_MS = 30_000;           // 30s first alarm
+export const GRACE_MAX_RETRIES = 6;                      // max alarm retries before giving up (~15 min span)
+
 // SIWX supported chains (CAIP-2 format)
 export const SUPPORTED_CHAINS = [
   { chainId: 'eip155:8453', type: 'eip191' },  // Base Mainnet (EVM)

@@ -1,9 +1,12 @@
 import { DurableObject } from 'cloudflare:workers';
 import { build402Response, verifyProof } from './x402';
 import { runInference } from './ai';
-import { AI_MODEL, MAX_HISTORY_MESSAGES, PAYMENT_MICRO_USDC, RATE_LIMIT_PER_MINUTE } from './constants';
+import {
+  AI_MODEL, MAX_HISTORY_MESSAGES, PAYMENT_MICRO_USDC, RATE_LIMIT_PER_MINUTE,
+  GRACE_MAX_PROVISIONAL_MICRO_USDC, GRACE_MAX_PENDING, GRACE_INITIAL_RETRY_MS, GRACE_MAX_RETRIES,
+} from './constants';
 import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billing';
-import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, StoredNonce } from './types';
+import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce } from './types';
 
 export class InferenceGate extends DurableObject<Env> {
   /** Wallet address set by the router via X-DO-Wallet header on each request */
@@ -36,7 +39,11 @@ export class InferenceGate extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     // Router passes the authenticated wallet via header — guaranteed present
     const walletHeader = request.headers.get('X-DO-Wallet');
-    if (walletHeader) this.wallet = walletHeader;
+    if (walletHeader) {
+      this.wallet = walletHeader;
+      // Persist wallet address for alarm context (alarm() has no incoming request)
+      await this.ctx.storage.put('walletAddress', walletHeader);
+    }
 
     const limited = await this.checkRateLimit();
     if (limited) return limited;
@@ -120,6 +127,18 @@ export class InferenceGate extends DurableObject<Env> {
       });
     }
 
+    // Step 6b: Grace mode — provisional credit when RPC is unreachable
+    let isProvisional = false;
+    if (check.provisional) {
+      const canGrace = await this.canActivateGraceMode(check.amount ?? PAYMENT_MICRO_USDC);
+      if (!canGrace) {
+        return new Response(JSON.stringify({
+          error: 'RPC unavailable and provisional credit limit reached — please retry later',
+        }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+      }
+      isProvisional = true;
+    }
+
     // Steps 7–8: Atomic transaction — replay check + balance top-up
     // Use actual on-chain transfer amount (verified by verifyProof); fall back to constant
     const creditAmount = check.amount ?? PAYMENT_MICRO_USDC;
@@ -138,6 +157,25 @@ export class InferenceGate extends DurableObject<Env> {
 
         const deposited = (await txn.get<number>('totalDepositedMicroUSDC')) ?? 0;
         await txn.put('totalDepositedMicroUSDC', deposited + creditAmount);
+
+        // Grace mode: store pending entry for async re-verification
+        if (isProvisional && check.pendingProof) {
+          const pendingKey = `pending:${proof.txHash}`;
+          await txn.put(pendingKey, {
+            proof: check.pendingProof,
+            creditedAmount: creditAmount,
+            createdAt: Date.now(),
+            retryCount: 0,
+            status: 'pending',
+          } satisfies PendingVerification);
+
+          const hashes = (await txn.get<string[]>('pendingTxHashes')) ?? [];
+          hashes.push(proof.txHash);
+          await txn.put('pendingTxHashes', hashes);
+
+          const provBal = (await txn.get<number>('provisionalBalance')) ?? 0;
+          await txn.put('provisionalBalance', provBal + creditAmount);
+        }
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -150,11 +188,18 @@ export class InferenceGate extends DurableObject<Env> {
       throw err;
     }
 
+    // Schedule alarm for async re-verification if provisional
+    if (isProvisional) {
+      console.warn('[dox402] Grace mode activated for tx %s, wallet %s, amount %d µUSDC',
+        proof.txHash, this.walletAddress, creditAmount);
+      await this.scheduleVerificationAlarm();
+    }
+
     // Step 9: Run inference (balance deducted async after stream)
-    return this.inferAndLog(body, newBalance, messages);
+    return this.inferAndLog(body, newBalance, messages, isProvisional);
   }
 
-  private async inferAndLog(body: InferRequest, balance: number, messages: ConversationMessage[]): Promise<Response> {
+  private async inferAndLog(body: InferRequest, balance: number, messages: ConversationMessage[], provisional = false): Promise<Response> {
     // Run Workers AI inference (falls back to mock in local dev when AI binding is unavailable)
     let stream: ReadableStream;
     try {
@@ -257,6 +302,7 @@ export class InferenceGate extends DurableObject<Env> {
       headers: {
         'Content-Type': 'text/event-stream',
         'X-Balance': String(balance),
+        ...(provisional ? { 'X-Payment-Status': 'provisional' } : {}),
       },
     });
   }
@@ -286,6 +332,18 @@ export class InferenceGate extends DurableObject<Env> {
       return Response.json({ error: check.reason }, { status: 402 });
     }
 
+    // Grace mode — provisional credit when RPC is unreachable
+    let isProvisional = false;
+    if (check.provisional) {
+      const canGrace = await this.canActivateGraceMode(check.amount ?? PAYMENT_MICRO_USDC);
+      if (!canGrace) {
+        return Response.json({
+          error: 'RPC unavailable and provisional credit limit reached — please retry later',
+        }, { status: 503 });
+      }
+      isProvisional = true;
+    }
+
     // Credit the actual verified on-chain transfer amount
     const creditAmount = check.amount ?? PAYMENT_MICRO_USDC;
     let newBalance = 0;
@@ -300,6 +358,25 @@ export class InferenceGate extends DurableObject<Env> {
         newBalance = current + creditAmount;
         await txn.put('balance',                  newBalance);
         await txn.put('totalDepositedMicroUSDC',  deposited + creditAmount);
+
+        // Grace mode: store pending entry for async re-verification
+        if (isProvisional && check.pendingProof) {
+          const pendingKey = `pending:${proof.txHash}`;
+          await txn.put(pendingKey, {
+            proof: check.pendingProof,
+            creditedAmount: creditAmount,
+            createdAt: Date.now(),
+            retryCount: 0,
+            status: 'pending',
+          } satisfies PendingVerification);
+
+          const hashes = (await txn.get<string[]>('pendingTxHashes')) ?? [];
+          hashes.push(proof.txHash);
+          await txn.put('pendingTxHashes', hashes);
+
+          const provBal = (await txn.get<number>('provisionalBalance')) ?? 0;
+          await txn.put('provisionalBalance', provBal + creditAmount);
+        }
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -309,19 +386,27 @@ export class InferenceGate extends DurableObject<Env> {
       throw err;
     }
 
+    // Schedule alarm for async re-verification if provisional
+    if (isProvisional) {
+      console.warn('[dox402] Grace mode activated for tx %s, wallet %s, amount %d µUSDC',
+        proof.txHash, this.walletAddress, creditAmount);
+      await this.scheduleVerificationAlarm();
+    }
+
     return Response.json(
-      { ok: true, credited: creditAmount, balance: newBalance },
+      { ok: true, credited: creditAmount, balance: newBalance, provisional: isProvisional },
       { headers: { 'Cache-Control': 'no-store' } },
     );
   }
 
   private async handleBalance(): Promise<Response> {
-    const [balance, totalDeposited, totalSpent, totalRequests, totalFailedRequests] = await Promise.all([
+    const [balance, totalDeposited, totalSpent, totalRequests, totalFailedRequests, provisionalBalance] = await Promise.all([
       this.ctx.storage.get<number>('balance'),
       this.ctx.storage.get<number>('totalDepositedMicroUSDC'),
       this.ctx.storage.get<number>('totalSpentMicroUSDC'),
       this.ctx.storage.get<number>('totalRequests'),
       this.ctx.storage.get<number>('totalFailedRequests'),
+      this.ctx.storage.get<number>('provisionalBalance'),
     ]);
     return Response.json({
       balance:                  balance ?? 0,
@@ -329,6 +414,7 @@ export class InferenceGate extends DurableObject<Env> {
       totalSpentMicroUSDC:      totalSpent ?? 0,
       totalRequests:            totalRequests ?? 0,
       totalFailedRequests:      totalFailedRequests ?? 0,
+      provisionalMicroUSDC:     provisionalBalance ?? 0,
     }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
@@ -346,6 +432,121 @@ export class InferenceGate extends DurableObject<Env> {
       JSON.stringify({ ok: true }),
       { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
     );
+  }
+
+  // ── Grace mode: provisional credit helpers ─────────────────────────────────
+
+  /** Check whether grace mode can be activated for the given amount */
+  private async canActivateGraceMode(amount: number): Promise<boolean> {
+    const provBal = (await this.ctx.storage.get<number>('provisionalBalance')) ?? 0;
+    if (provBal + amount > GRACE_MAX_PROVISIONAL_MICRO_USDC) return false;
+
+    const hashes = (await this.ctx.storage.get<string[]>('pendingTxHashes')) ?? [];
+    if (hashes.length >= GRACE_MAX_PENDING) return false;
+
+    return true;
+  }
+
+  /** Schedule a DO alarm for the next pending re-verification.
+   *  Only one alarm can be active per DO — it will process all pending entries. */
+  private async scheduleVerificationAlarm(): Promise<void> {
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing) return; // alarm already scheduled
+    await this.ctx.storage.setAlarm(Date.now() + GRACE_INITIAL_RETRY_MS);
+  }
+
+  /** Remove a pending entry from the tracking list */
+  private async removePendingEntry(txHash: string): Promise<void> {
+    const hashes = (await this.ctx.storage.get<string[]>('pendingTxHashes')) ?? [];
+    const filtered = hashes.filter(h => h !== txHash);
+    await this.ctx.storage.put('pendingTxHashes', filtered);
+  }
+
+  /** Clear provisional balance tracking for a resolved entry.
+   *  If `reverseCredit` is true, also deducts the amount from the wallet balance. */
+  private async clearProvisionalCredit(txHash: string, amount: number, reverseCredit: boolean): Promise<void> {
+    await this.removePendingEntry(txHash);
+
+    const provBal = (await this.ctx.storage.get<number>('provisionalBalance')) ?? 0;
+    await this.ctx.storage.put('provisionalBalance', Math.max(0, provBal - amount));
+
+    if (reverseCredit) {
+      const balance = (await this.ctx.storage.get<number>('balance')) ?? 0;
+      const newBalance = Math.max(0, balance - amount);
+      await this.ctx.storage.put('balance', newBalance);
+      console.warn('[dox402] Reversed %d µUSDC from wallet %s (new balance: %d)',
+        amount, this.walletAddress, newBalance);
+    }
+  }
+
+  /** DO alarm handler — async re-verification of provisionally credited payments */
+  async alarm(): Promise<void> {
+    // Restore wallet address (alarm() has no incoming HTTP request)
+    this.wallet = (await this.ctx.storage.get<string>('walletAddress')) ?? '';
+
+    const hashes = (await this.ctx.storage.get<string[]>('pendingTxHashes')) ?? [];
+    if (hashes.length === 0) return;
+
+    let anyStillPending = false;
+    let nextRetryMs = Infinity;
+
+    for (const txHash of [...hashes]) {
+      const key = `pending:${txHash}`;
+      const entry = await this.ctx.storage.get<PendingVerification>(key);
+      if (!entry || entry.status !== 'pending') {
+        await this.removePendingEntry(txHash);
+        continue;
+      }
+
+      // Attempt re-verification via RPC
+      const result = await verifyProof(entry.proof, this.walletAddress, this.env);
+
+      entry.retryCount++;
+      entry.lastAttemptAt = Date.now();
+
+      if (result.valid && !result.provisional) {
+        // RPC confirmed the transaction — mark as verified
+        entry.status = 'confirmed';
+        await this.ctx.storage.put(key, entry);
+        await this.clearProvisionalCredit(txHash, entry.creditedAmount, false);
+        console.log('[dox402] Re-verification CONFIRMED tx %s, wallet %s', txHash, this.walletAddress);
+        continue;
+      }
+
+      if (result.provisional) {
+        // RPC still unreachable — schedule another retry
+        if (entry.retryCount >= GRACE_MAX_RETRIES) {
+          entry.status = 'expired';
+          entry.lastError = result.reason;
+          await this.ctx.storage.put(key, entry);
+          await this.clearProvisionalCredit(txHash, entry.creditedAmount, false);
+          console.error('[dox402] Re-verification EXPIRED after %d attempts for tx %s, wallet %s — keeping credit',
+            entry.retryCount, txHash, this.walletAddress);
+          continue;
+        }
+        entry.lastError = result.reason;
+        await this.ctx.storage.put(key, entry);
+        anyStillPending = true;
+        // Exponential backoff: 30s * 2^(retryCount-1)
+        const delay = GRACE_INITIAL_RETRY_MS * Math.pow(2, entry.retryCount - 1);
+        nextRetryMs = Math.min(nextRetryMs, delay);
+        continue;
+      }
+
+      // RPC succeeded but verification FAILED (reverted, wrong sender, no transfer, etc.)
+      // This is fraud or a mistake — reverse the provisional credit
+      entry.status = 'reversed';
+      entry.lastError = result.reason;
+      await this.ctx.storage.put(key, entry);
+      await this.clearProvisionalCredit(txHash, entry.creditedAmount, true);
+      console.error('[dox402] Re-verification REVERSED tx %s, wallet %s — reason: %s',
+        txHash, this.walletAddress, result.reason);
+    }
+
+    // Schedule next alarm if any entries are still pending
+    if (anyStillPending && nextRetryMs < Infinity) {
+      await this.ctx.storage.setAlarm(Date.now() + nextRetryMs);
+    }
   }
 
   // ── SIWE nonce management ──────────────────────────────────────────────────

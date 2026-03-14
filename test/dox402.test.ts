@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock cloudflare:workers (imported transitively via dox402.ts)
 vi.mock('cloudflare:workers', () => ({
@@ -13,7 +13,8 @@ vi.mock('cloudflare:workers', () => ({
 }));
 
 import { InferenceGate } from '../src/dox402';
-import type { Env } from '../src/types';
+import type { Env, PendingVerification, VerifyProofResult } from '../src/types';
+import * as x402Module from '../src/x402';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,7 @@ function erroringSSEStream(initialChunks: string[], error: Error): ReadableStrea
 
 function makeMockStorage() {
   const data = new Map<string, unknown>();
+  let alarm: number | null = null;
   return {
     get: vi.fn(async <T>(key: string): Promise<T | undefined> => data.get(key) as T),
     put: vi.fn(async (key: string, value: unknown) => { data.set(key, value); }),
@@ -52,7 +54,11 @@ function makeMockStorage() {
       };
       await cb(txn);
     }),
+    getAlarm: vi.fn(async () => alarm),
+    setAlarm: vi.fn(async (time: number | Date) => { alarm = typeof time === 'number' ? time : time.getTime(); }),
+    deleteAlarm: vi.fn(async () => { alarm = null; }),
     _data: data,
+    _getAlarm: () => alarm,
   };
 }
 
@@ -258,5 +264,152 @@ describe('InferenceGate — credit refund on AI failure', () => {
 
     expect(body.totalFailedRequests).toBe(1);
     expect(body.balance).toBe(1000);
+  });
+});
+
+// ── Grace mode — alarm re-verification ──────────────────────────────────────
+
+describe('InferenceGate — alarm re-verification', () => {
+  let verifyProofSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    verifyProofSpy = vi.spyOn(x402Module, 'verifyProof');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function setupPendingEntry(storage: ReturnType<typeof makeMockStorage>, opts?: {
+    txHash?: string;
+    retryCount?: number;
+    creditedAmount?: number;
+  }) {
+    const txHash = opts?.txHash ?? '0x' + 'a'.repeat(64);
+    const entry: PendingVerification = {
+      proof: {
+        txHash,
+        from: '0xtest',
+        amount: String(opts?.creditedAmount ?? 1000),
+        timestamp: Math.floor(Date.now() / 1000),
+        signature: '0xmocksig',
+      },
+      creditedAmount: opts?.creditedAmount ?? 1000,
+      createdAt: Date.now(),
+      retryCount: opts?.retryCount ?? 0,
+      status: 'pending',
+    };
+    storage._data.set(`pending:${txHash}`, entry);
+    storage._data.set('pendingTxHashes', [txHash]);
+    storage._data.set('provisionalBalance', opts?.creditedAmount ?? 1000);
+    storage._data.set('walletAddress', '0xtest');
+  }
+
+  it('confirms valid transaction on re-verification', async () => {
+    const { gate, storage } = makeTestDO();
+    setupPendingEntry(storage);
+    storage._data.set('balance', 1000);
+
+    verifyProofSpy.mockResolvedValue({ valid: true, amount: 1000 });
+
+    await gate.alarm();
+
+    const entry = storage._data.get('pending:0x' + 'a'.repeat(64)) as PendingVerification;
+    expect(entry.status).toBe('confirmed');
+    expect(storage._data.get('provisionalBalance')).toBe(0);
+    expect(storage._data.get('balance')).toBe(1000); // balance unchanged
+    expect((storage._data.get('pendingTxHashes') as string[]).length).toBe(0);
+  });
+
+  it('reverses fraudulent transaction on re-verification', async () => {
+    const { gate, storage } = makeTestDO();
+    setupPendingEntry(storage, { creditedAmount: 1000 });
+    storage._data.set('balance', 1000);
+
+    verifyProofSpy.mockResolvedValue({ valid: false, reason: 'transaction reverted on-chain' });
+
+    await gate.alarm();
+
+    const entry = storage._data.get('pending:0x' + 'a'.repeat(64)) as PendingVerification;
+    expect(entry.status).toBe('reversed');
+    expect(storage._data.get('provisionalBalance')).toBe(0);
+    expect(storage._data.get('balance')).toBe(0); // balance reversed
+  });
+
+  it('reschedules alarm on continued RPC failure', async () => {
+    const { gate, storage } = makeTestDO();
+    setupPendingEntry(storage, { retryCount: 1 });
+
+    verifyProofSpy.mockResolvedValue({ valid: true, provisional: true, reason: 'RPC timeout' });
+
+    await gate.alarm();
+
+    const entry = storage._data.get('pending:0x' + 'a'.repeat(64)) as PendingVerification;
+    expect(entry.status).toBe('pending');
+    expect(entry.retryCount).toBe(2);
+    // Alarm should be rescheduled
+    expect(storage.setAlarm).toHaveBeenCalled();
+  });
+
+  it('expires after max retries — keeps credit (benefit of doubt)', async () => {
+    const { gate, storage } = makeTestDO();
+    setupPendingEntry(storage, { retryCount: 5, creditedAmount: 1000 }); // retryCount 5, will become 6 = max
+
+    verifyProofSpy.mockResolvedValue({ valid: true, provisional: true, reason: 'RPC timeout' });
+
+    await gate.alarm();
+
+    const entry = storage._data.get('pending:0x' + 'a'.repeat(64)) as PendingVerification;
+    expect(entry.status).toBe('expired');
+    expect(storage._data.get('balance')).toBeUndefined(); // balance NOT deducted (benefit of doubt)
+    expect(storage._data.get('provisionalBalance')).toBe(0); // tracking cleared
+  });
+
+  it('processes multiple pending entries in one alarm invocation', async () => {
+    const { gate, storage } = makeTestDO();
+    const txHash1 = '0x' + 'a'.repeat(64);
+    const txHash2 = '0x' + 'b'.repeat(64);
+
+    const entry1: PendingVerification = {
+      proof: { txHash: txHash1, from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig1' },
+      creditedAmount: 1000, createdAt: Date.now(), retryCount: 0, status: 'pending',
+    };
+    const entry2: PendingVerification = {
+      proof: { txHash: txHash2, from: '0xtest', amount: '2000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig2' },
+      creditedAmount: 2000, createdAt: Date.now(), retryCount: 0, status: 'pending',
+    };
+    storage._data.set(`pending:${txHash1}`, entry1);
+    storage._data.set(`pending:${txHash2}`, entry2);
+    storage._data.set('pendingTxHashes', [txHash1, txHash2]);
+    storage._data.set('provisionalBalance', 3000);
+    storage._data.set('walletAddress', '0xtest');
+    storage._data.set('balance', 3000);
+
+    // First entry confirmed, second entry reversed
+    verifyProofSpy
+      .mockResolvedValueOnce({ valid: true, amount: 1000 })
+      .mockResolvedValueOnce({ valid: false, reason: 'no matching USDC Transfer' });
+
+    await gate.alarm();
+
+    expect((storage._data.get(`pending:${txHash1}`) as PendingVerification).status).toBe('confirmed');
+    expect((storage._data.get(`pending:${txHash2}`) as PendingVerification).status).toBe('reversed');
+    expect(storage._data.get('provisionalBalance')).toBe(0);
+    expect(storage._data.get('balance')).toBe(1000); // 3000 - 2000 (reversed)
+  });
+
+  it('exposes provisionalMicroUSDC in /balance response', async () => {
+    const { gate, storage } = makeTestDO();
+    storage._data.set('balance', 2000);
+    storage._data.set('provisionalBalance', 1000);
+
+    const balanceReq = new Request('http://localhost/balance', {
+      method: 'GET',
+      headers: { 'X-DO-Wallet': '0xtest' },
+    });
+    const res = await gate.fetch(balanceReq);
+    const body = await res.json() as { provisionalMicroUSDC: number };
+
+    expect(body.provisionalMicroUSDC).toBe(1000);
   });
 });

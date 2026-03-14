@@ -73,6 +73,28 @@ export interface SiwxExtension {
   };
 }
 
+// Result from verifyProof() — may indicate a provisional (grace mode) credit
+export interface VerifyProofResult {
+  valid: boolean;
+  reason?: string;
+  amount?: number;
+  /** true when Tier 1 passed but Tier 2 RPC was unreachable — caller should grant provisional credit */
+  provisional?: boolean;
+  /** Original proof data, echoed back when provisional — caller stores it for async re-verification */
+  pendingProof?: PaymentProof;
+}
+
+// Stored in DO as `pending:{txHash}` — tracks a provisionally credited payment awaiting RPC re-verification
+export interface PendingVerification {
+  proof: PaymentProof;
+  creditedAmount: number;       // µUSDC provisionally added to balance
+  createdAt: number;            // Date.now() when grace mode activated
+  retryCount: number;           // number of alarm-based re-verification attempts so far
+  status: 'pending' | 'confirmed' | 'reversed' | 'expired';
+  lastAttemptAt?: number;       // Date.now() of most recent re-verification attempt
+  lastError?: string;           // most recent RPC error message
+}
+
 // Env bindings (matches wrangler.toml)
 export interface Env {
   DOX402: DurableObjectNamespace;

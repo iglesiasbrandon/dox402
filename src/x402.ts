@@ -1,5 +1,5 @@
 import { PRICE_USDC_UNITS, PAYMENT_MICRO_USDC, PROOF_MAX_AGE_SECS, NETWORK, USDC_CONTRACT } from './constants';
-import { PaymentRequired, PaymentProof, Env, SiwxExtension } from './types';
+import { PaymentRequired, PaymentProof, Env, SiwxExtension, VerifyProofResult } from './types';
 import { recoverAddress } from './siwe';
 
 // ERC-20 Transfer(address indexed from, address indexed to, uint256 value)
@@ -70,7 +70,7 @@ export async function verifyProof(
   walletAddress: string,
   env: Env,
   opts?: { skipSignature?: boolean; hostname?: string },
-): Promise<{ valid: boolean; reason?: string; amount?: number }> {
+): Promise<VerifyProofResult> {
 
   // ── Tier 1: structural checks (fast, no I/O) ──────────────────────────────
   const now = Math.floor(Date.now() / 1000);
@@ -119,6 +119,7 @@ export async function verifyProof(
   // Fetch transaction receipt with timeout + retry on rate-limit
   let receipt: EthReceipt | null = null;
   let rpcSucceeded = false;
+  let rpcFailureIsConnectivity = false;
   let lastError = 'RPC request failed or timed out';
 
   for (let attempt = 0; attempt < RPC_MAX_RETRIES; attempt++) {
@@ -148,20 +149,42 @@ export async function verifyProof(
             !json.error.message.toLowerCase().includes('too many')) {
           return { valid: false, reason: lastError };
         }
+        console.warn('[x402] RPC attempt %d/%d rate-limited: %s (tx=%s)',
+          attempt + 1, RPC_MAX_RETRIES, json.error.message, proof.txHash);
+        rpcFailureIsConnectivity = true;
         continue; // retry
       }
       receipt = json.result;
       rpcSucceeded = true;
       break; // success
-    } catch {
+    } catch (err) {
+      rpcFailureIsConnectivity = true;
       lastError = `RPC request failed or timed out (attempt ${attempt + 1}/${RPC_MAX_RETRIES})`;
+      console.warn('[x402] RPC attempt %d/%d failed: %s (tx=%s)',
+        attempt + 1, RPC_MAX_RETRIES,
+        err instanceof Error ? err.message : 'unknown error',
+        proof.txHash);
     } finally {
       clearTimeout(timer);
     }
   }
 
-  if (!rpcSucceeded)
+  if (!rpcSucceeded) {
+    // Grace mode: Tier 1 passed, RPC unreachable — signal provisional credit
+    if (rpcFailureIsConnectivity) {
+      const amount = Number(BigInt(proof.amount));
+      console.warn('[x402] RPC unreachable after %d attempts — signaling grace mode for tx %s (amount=%d)',
+        RPC_MAX_RETRIES, proof.txHash, amount);
+      return {
+        valid: true,
+        provisional: true,
+        amount,
+        pendingProof: proof,
+        reason: lastError,
+      };
+    }
     return { valid: false, reason: lastError };
+  }
 
   if (!receipt)
     return { valid: false, reason: 'transaction not found on-chain — it may still be pending. Please retry in a few seconds.' };
