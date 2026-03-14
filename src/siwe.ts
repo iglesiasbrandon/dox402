@@ -115,7 +115,8 @@ export function verifySiweLogin(
 
   // Domain check
   if (parsed.domain !== expectedDomain) {
-    return { valid: false, reason: `Domain mismatch: expected ${expectedDomain}` };
+    console.warn('[siwe] Domain mismatch: got %s, expected %s', parsed.domain, expectedDomain);
+    return { valid: false, reason: 'Domain mismatch' };
   }
 
   // Version check
@@ -142,7 +143,8 @@ export function verifySiweLogin(
   try {
     recovered = recoverAddress(message, signature);
   } catch (e) {
-    return { valid: false, reason: 'Signature verification failed: ' + (e instanceof Error ? e.message : String(e)) };
+    console.warn('[siwe] Signature verification failed: %s', e instanceof Error ? e.message : String(e));
+    return { valid: false, reason: 'Signature verification failed' };
   }
 
   // Address match (case-insensitive)

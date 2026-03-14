@@ -50,7 +50,8 @@ export function verifySiwxPayload(
   // Check that the chain is supported
   const chain = SUPPORTED_CHAINS.find(c => c.chainId === payload.chainId && c.type === payload.type);
   if (!chain) {
-    return { valid: false, reason: `Unsupported chain: ${payload.chainId} (${payload.type})` };
+    console.warn('[siwx] Unsupported chain: %s (%s)', payload.chainId, payload.type);
+    return { valid: false, reason: 'Unsupported chain' };
   }
 
   // EVM chains: delegate to existing SIWE verification
