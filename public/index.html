@@ -948,11 +948,15 @@ DELETE /history   clear conversation</pre>
   // ── Balance ────────────────────────────────────────────────────────────────
   const fmtBalance = µ => (+(µ ?? 0)).toLocaleString() + ' credits';
 
-  // Update pill from X-Balance header (pre-deduction); schedule a refresh for actual post-deduction value.
-  function updateBalanceFromResponse(res) {
-    const raw = res.headers.get('X-Balance');
-    if (raw !== null) document.getElementById('pillN').textContent = fmtBalance(parseInt(raw, 10));
+  // Schedule a /balance refresh after inference completes (deduction happens async on server).
+  function refreshBalanceAfterInference() {
     setTimeout(fetchBalance, 1500);
+  }
+
+  // Read the currently displayed balance from the UI pill (used as pre-balance for cost calculation).
+  function readDisplayedBalance() {
+    const txt = document.getElementById('pillN').textContent || '0';
+    return parseInt(txt.replace(/[^0-9]/g, ''), 10) || 0;
   }
 
   async function fetchBalance() {
@@ -1121,6 +1125,7 @@ DELETE /history   clear conversation</pre>
       };
       proof.signature = await signProof(proof, actualFrom);
       setBusy(true);
+      const capturedPreBalance = readDisplayedBalance();
       const proofHeader = btoa(JSON.stringify(proof));
       // Pass proof directly to doInfer and catch 402-after-payment as an error
       const inferRes = await fetch('/infer', {
@@ -1163,9 +1168,8 @@ DELETE /history   clear conversation</pre>
       }
       setStreaming(false, assistantContent);
       setBusy(false);
-      const preBalPay = parseInt(inferRes.headers.get('X-Balance') ?? '0', 10);
-      attachUsageInfo(assistantEl, { model: pendingModel, preBalance: preBalPay });
-      updateBalanceFromResponse(inferRes);
+      attachUsageInfo(assistantEl, { model: pendingModel, preBalance: capturedPreBalance });
+      refreshBalanceAfterInference();
       return; // skip the doInfer call below
 
     } catch (e) {
@@ -1193,6 +1197,7 @@ DELETE /history   clear conversation</pre>
 
   // ── Core inference ─────────────────────────────────────────────────────────
   async function doInfer(prompt, proofHeader, model) {
+    const capturedPreBalance = readDisplayedBalance();
     try {
       const headers = { 'Content-Type': 'application/json', ...authHeaders() };
       if (proofHeader) headers['PAYMENT-SIGNATURE'] = proofHeader;
@@ -1254,9 +1259,8 @@ DELETE /history   clear conversation</pre>
 
       setStreaming(false, assistantContent);
       setBusy(false);
-      const preBalInfer = parseInt(res.headers.get('X-Balance') ?? '0', 10);
-      attachUsageInfo(assistantEl, { model, preBalance: preBalInfer });
-      updateBalanceFromResponse(res);
+      attachUsageInfo(assistantEl, { model, preBalance: capturedPreBalance });
+      refreshBalanceAfterInference();
 
     } catch (e) {
       showErr('Request failed: ' + e.message);

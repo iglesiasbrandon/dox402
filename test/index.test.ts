@@ -145,7 +145,7 @@ describe('CORS', () => {
     const res = await worker.fetch(req, makeEnv());
     expect(res.status).toBe(200);
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://dox402.example.com');
-    expect(res.headers.get('Access-Control-Expose-Headers')).toContain('X-Balance');
+    expect(res.headers.get('Access-Control-Expose-Headers')).not.toContain('X-Balance');
     expect(res.headers.get('Access-Control-Expose-Headers')).toContain('PAYMENT-REQUIRED');
   });
 

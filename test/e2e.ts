@@ -203,7 +203,7 @@ if (inferRes.status === 502) {
   const err = await inferRes.text();
   fail(`Expected 200 or 502, got ${inferRes.status}: ${err}`);
 } else {
-  pass(`Status: 200, X-Balance: ${inferRes.headers.get('X-Balance')}`);
+  pass('Status: 200, streaming inference response');
   if (inferRes.body) {
     const reader = inferRes.body.getReader();
     const decoder = new TextDecoder();

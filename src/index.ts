@@ -17,7 +17,7 @@ function corsHeaders(origin: string): Record<string, string> {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, PAYMENT-SIGNATURE, SIGN-IN-WITH-X',
-    'Access-Control-Expose-Headers': 'X-Balance, PAYMENT-REQUIRED',
+    'Access-Control-Expose-Headers': 'PAYMENT-REQUIRED',
     'Access-Control-Max-Age': '86400',
   };
 }

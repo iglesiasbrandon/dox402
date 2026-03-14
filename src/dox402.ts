@@ -274,12 +274,11 @@ export class InferenceGate extends DurableObject<Env> {
     this.ctx.waitUntil(postStreamWork);
 
     // Return streamed SSE response.
-    // X-Balance is the pre-deduction balance; client refreshes via /balance after stream to get final value.
+    // Client refreshes via /balance after stream completes to get post-deduction value.
     return new Response(outStream, {
       status: 200,
       headers: {
         'Content-Type': 'text/event-stream',
-        'X-Balance': String(balance),
         ...(provisional ? { 'X-Payment-Status': 'provisional' } : {}),
       },
     });
