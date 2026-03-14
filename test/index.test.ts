@@ -85,7 +85,7 @@ function buildSiwxHeaderValue(wallet: { privKey: Uint8Array; address: string }, 
   }));
 }
 
-// Create a mock DO namespace that returns a stub handling nonce and verify-nonce
+// Create a mock DO namespace that returns a stub with RPC methods
 function makeMockDONamespace(opts?: {
   nonceValue?: string;
   verifyNonceOk?: boolean;
@@ -95,25 +95,26 @@ function makeMockDONamespace(opts?: {
   const verifyOk = opts?.verifyNonceOk ?? true;
   const inferRes = opts?.inferResponse ?? Response.json({ response: 'hello from AI' });
 
-  const stubFetch = vi.fn(async (request: Request) => {
-    const url = new URL(request.url);
-    if (url.pathname === '/auth/nonce' && request.method === 'GET') {
-      return Response.json({ nonce });
-    }
-    if (url.pathname === '/auth/verify-nonce' && request.method === 'POST') {
-      if (verifyOk) return Response.json({ ok: true });
-      return Response.json({ error: 'Invalid or expired nonce' }, { status: 401 });
-    }
-    if (url.pathname === '/infer' && request.method === 'POST') {
-      return inferRes;
-    }
-    return new Response('Not found', { status: 404 });
+  const handleNonce = vi.fn(async () => Response.json({ nonce }));
+  const handleVerifyNonce = vi.fn(async (_nonce: string) => {
+    if (verifyOk) return Response.json({ ok: true });
+    return Response.json({ error: 'Invalid or expired nonce' }, { status: 401 });
   });
+  const handleInfer = vi.fn(async () => inferRes);
+  const handleDeposit = vi.fn(async () => Response.json({ ok: true, credited: 1000, balance: 1000 }));
+  const handleBalance = vi.fn(async () => Response.json({ balance: 0 }));
+  const handleHistory = vi.fn(async () => Response.json({ history: [] }));
+  const handleClearHistory = vi.fn(async () => Response.json({ ok: true }));
+
+  const stub = {
+    handleNonce, handleVerifyNonce, handleInfer, handleDeposit,
+    handleBalance, handleHistory, handleClearHistory,
+  };
 
   return {
     idFromName: vi.fn(() => ({ toString: () => 'mock-do-id' })),
-    get: vi.fn(() => ({ fetch: stubFetch })),
-    _stubFetch: stubFetch,
+    get: vi.fn(() => stub),
+    _mocks: stub,
   };
 }
 

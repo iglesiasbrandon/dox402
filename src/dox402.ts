@@ -9,10 +9,10 @@ import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billi
 import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce } from './types';
 
 export class InferenceGate extends DurableObject<Env> {
-  /** Wallet address set by the router via X-DO-Wallet header on each request */
+  /** Wallet address — set by RPC callers or restored from storage for alarms */
   private wallet = '';
 
-  /** Wallet address for the current request — set in fetch() from router header */
+  /** Wallet address for the current context */
   private get walletAddress(): string {
     return this.wallet;
   }
@@ -36,63 +36,28 @@ export class InferenceGate extends DurableObject<Env> {
     return null;
   }
 
-  async fetch(request: Request): Promise<Response> {
-    // Router passes the authenticated wallet via header — guaranteed present
-    const walletHeader = request.headers.get('X-DO-Wallet');
-    if (walletHeader) {
-      this.wallet = walletHeader;
-      // Persist wallet address for alarm context (alarm() has no incoming request)
-      await this.ctx.storage.put('walletAddress', walletHeader);
-    }
+  // ── Public RPC methods ────────────────────────────────────────────────────
+  // Called directly by the Worker via typed stubs (no HTTP fetch / URL routing).
+  // Each method handles its own rate limiting.
+
+  async handleInfer(
+    body: InferRequest,
+    paymentSignature: string | null,
+    hostname: string,
+    wallet: string,
+  ): Promise<Response> {
+    // Set wallet identity for this request and persist for alarm context
+    this.wallet = wallet;
+    await this.ctx.storage.put('walletAddress', wallet);
 
     const limited = await this.checkRateLimit();
     if (limited) return limited;
 
-    const url = new URL(request.url);
-    if (url.pathname === '/infer' && request.method === 'POST') {
-      return this.handleInfer(request);
-    }
-    if (url.pathname === '/balance' && request.method === 'GET') {
-      return this.handleBalance();
-    }
-    if (url.pathname === '/history' && request.method === 'GET') {
-      return this.handleHistory();
-    }
-    if (url.pathname === '/history' && request.method === 'DELETE') {
-      return this.handleClearHistory();
-    }
-    if (url.pathname === '/deposit' && request.method === 'POST') {
-      return this.handleDeposit(request);
-    }
-    if (url.pathname === '/auth/nonce' && request.method === 'GET') {
-      return this.handleNonce();
-    }
-    if (url.pathname === '/auth/verify-nonce' && request.method === 'POST') {
-      return this.handleVerifyNonce(request);
-    }
-    return new Response('Not found', { status: 404 });
-  }
-
-  private async handleInfer(request: Request): Promise<Response> {
-    // Step 1: Parse body
-    let body: InferRequest;
-    try {
-      body = await request.json<InferRequest>();
-    } catch {
-      return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Step 2: Load current µUSDC balance
+    // Step 1: Load current µUSDC balance
     const balance = (await this.ctx.storage.get<number>('balance')) ?? 0;
 
-    // Step 3: Check for PAYMENT-SIGNATURE header
-    const proofHeader = request.headers.get('PAYMENT-SIGNATURE');
-
-    // Step 4a: No proof and no balance → return 402
-    if (!proofHeader && balance === 0) {
+    // Step 2: No proof and no balance → return 402
+    if (!paymentSignature && balance === 0) {
       return build402Response(this.env.PAYMENT_ADDRESS);
     }
 
@@ -100,15 +65,15 @@ export class InferenceGate extends DurableObject<Env> {
     const history = (await this.ctx.storage.get<ConversationMessage[]>('history')) ?? [];
     const messages: ConversationMessage[] = [...history, { role: 'user', content: body.prompt }];
 
-    // Step 4b: No proof but has balance → run inference (cost deducted post-stream)
-    if (!proofHeader) {
+    // Step 3: No proof but has balance → run inference (cost deducted post-stream)
+    if (!paymentSignature) {
       return this.inferAndLog(body, balance, messages);
     }
 
-    // Step 5: Parse the proof from the PAYMENT-SIGNATURE header
+    // Step 4: Parse the proof from the payment signature
     let proof: PaymentProof;
     try {
-      proof = JSON.parse(atob(proofHeader)) as PaymentProof;
+      proof = JSON.parse(atob(paymentSignature)) as PaymentProof;
     } catch {
       return new Response(JSON.stringify({ error: 'Malformed PAYMENT-SIGNATURE header' }), {
         status: 402,
@@ -116,9 +81,9 @@ export class InferenceGate extends DurableObject<Env> {
       });
     }
 
-    // Step 6: Tier 1 structural + Tier 2 on-chain verification
+    // Step 5: Tier 1 structural + Tier 2 on-chain verification
     const check = await verifyProof(proof, this.walletAddress, this.env, {
-      hostname: new URL(request.url).hostname,
+      hostname,
     });
     if (!check.valid) {
       return new Response(JSON.stringify({ error: check.reason }), {
@@ -307,13 +272,13 @@ export class InferenceGate extends DurableObject<Env> {
     });
   }
 
-  private async handleDeposit(request: Request): Promise<Response> {
-    let body: DepositRequest;
-    try {
-      body = await request.json<DepositRequest>();
-    } catch {
-      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
-    }
+  async handleDeposit(body: DepositRequest, hostname: string, wallet: string): Promise<Response> {
+    // Set wallet identity for this request and persist for alarm context
+    this.wallet = wallet;
+    await this.ctx.storage.put('walletAddress', wallet);
+
+    const limited = await this.checkRateLimit();
+    if (limited) return limited;
 
     let proof: PaymentProof;
     try {
@@ -326,7 +291,7 @@ export class InferenceGate extends DurableObject<Env> {
     // and on-chain receipt.from confirms the sender — proof signature adds no security value.
     const check = await verifyProof(proof, this.walletAddress, this.env, {
       skipSignature: true,
-      hostname: new URL(request.url).hostname,
+      hostname,
     });
     if (!check.valid) {
       return Response.json({ error: check.reason }, { status: 402 });
@@ -399,7 +364,10 @@ export class InferenceGate extends DurableObject<Env> {
     );
   }
 
-  private async handleBalance(): Promise<Response> {
+  async handleBalance(): Promise<Response> {
+    const limited = await this.checkRateLimit();
+    if (limited) return limited;
+
     const [balance, totalDeposited, totalSpent, totalRequests, totalFailedRequests, provisionalBalance] = await Promise.all([
       this.ctx.storage.get<number>('balance'),
       this.ctx.storage.get<number>('totalDepositedMicroUSDC'),
@@ -418,7 +386,10 @@ export class InferenceGate extends DurableObject<Env> {
     }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
-  private async handleHistory(): Promise<Response> {
+  async handleHistory(): Promise<Response> {
+    const limited = await this.checkRateLimit();
+    if (limited) return limited;
+
     const history = (await this.ctx.storage.get<ConversationMessage[]>('history')) ?? [];
     return new Response(
       JSON.stringify({ history }),
@@ -426,7 +397,10 @@ export class InferenceGate extends DurableObject<Env> {
     );
   }
 
-  private async handleClearHistory(): Promise<Response> {
+  async handleClearHistory(): Promise<Response> {
+    const limited = await this.checkRateLimit();
+    if (limited) return limited;
+
     await this.ctx.storage.delete('history');
     return new Response(
       JSON.stringify({ ok: true }),
@@ -556,7 +530,10 @@ export class InferenceGate extends DurableObject<Env> {
   private static readonly NONCE_EXPIRY_MS = 300_000; // 5 minutes
   private static readonly MAX_NONCES = 5;
 
-  private async handleNonce(): Promise<Response> {
+  async handleNonce(): Promise<Response> {
+    const limited = await this.checkRateLimit();
+    if (limited) return limited;
+
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     const nonce = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -575,16 +552,16 @@ export class InferenceGate extends DurableObject<Env> {
     return Response.json({ nonce }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
-  async handleVerifyNonce(request: Request): Promise<Response> {
-    let body: { nonce: string };
-    try {
-      body = await request.json<{ nonce: string }>();
-    } catch {
-      return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+  async handleVerifyNonce(nonce: string): Promise<Response> {
+    const limited = await this.checkRateLimit();
+    if (limited) return limited;
+
+    if (!nonce) {
+      return Response.json({ error: 'Missing nonce' }, { status: 400 });
     }
 
     const nonces = (await this.ctx.storage.get<StoredNonce[]>('siwe:nonces')) ?? [];
-    const idx = nonces.findIndex(n => n.nonce === body.nonce);
+    const idx = nonces.findIndex(n => n.nonce === nonce);
     if (idx === -1) {
       return Response.json({ error: 'Invalid or expired nonce' }, { status: 401 });
     }

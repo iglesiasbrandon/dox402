@@ -56,28 +56,11 @@ function unauthorized(reason = 'Missing or invalid session token'): Response {
   return Response.json({ error: reason }, { status: 401 });
 }
 
-function getDoStub(env: Env, walletAddress: string): DurableObjectStub {
+/** Get a typed DO stub for direct RPC calls (no HTTP fetch routing) */
+function getTypedStub(env: Env, walletAddress: string) {
   const doName = walletAddress.slice(2).toLowerCase(); // strip 0x, lowercase
   const id = env.DOX402.idFromName(doName);
-  return env.DOX402.get(id);
-}
-
-/** Clone a request and inject the X-DO-Wallet header so the DO knows its wallet */
-function doRequest(request: Request, wallet: string): Request {
-  const headers = new Headers(request.headers);
-  headers.set('X-DO-Wallet', wallet);
-  return new Request(request.url, {
-    method: request.method,
-    headers,
-    body: request.body,
-    // @ts-expect-error — duplex required by Node.js for streaming bodies; Cloudflare Workers ignores it
-    duplex: 'half',
-  });
-}
-
-/** Build a simple GET/DELETE request with the X-DO-Wallet header */
-function doSimpleRequest(url: string, method: string, wallet: string): Request {
-  return new Request(url, { method, headers: { 'X-DO-Wallet': wallet } });
+  return (env.DOX402 as DurableObjectNamespace<InferenceGate>).get(id);
 }
 
 // Extract verified wallet from Authorization: Bearer <token>
@@ -106,17 +89,13 @@ async function extractSiwxWallet(
   const wallet = result.address.toLowerCase();
   if (!WALLET_REGEX.test(wallet)) return null;
 
-  // Verify nonce via DO (one-time use)
-  const stub = getDoStub(env, wallet);
+  // Verify nonce via DO RPC (one-time use)
+  const stub = getTypedStub(env, wallet);
   // Extract nonce from the SIWE message
   const nonceMatch = payload.message.match(/^Nonce: (.+)$/m);
   if (!nonceMatch) return null;
 
-  const nonceRes = await stub.fetch(new Request(`${url.origin}/auth/verify-nonce`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-DO-Wallet': wallet },
-    body: JSON.stringify({ nonce: nonceMatch[1] }),
-  }));
+  const nonceRes = await stub.handleVerifyNonce(nonceMatch[1]);
   if (!nonceRes.ok) return null;
 
   // Issue session token with chain info
@@ -166,8 +145,8 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
     if (url.pathname === '/auth/nonce' && request.method === 'GET') {
       const wallet = url.searchParams.get('wallet') ?? '';
       if (!WALLET_REGEX.test(wallet)) return invalidWallet();
-      const stub = getDoStub(env, wallet);
-      return stub.fetch(doSimpleRequest(`${url.origin}/auth/nonce`, 'GET', wallet));
+      const stub = getTypedStub(env, wallet);
+      return stub.handleNonce();
     }
 
     // POST /auth/login — verify signed SIWE message and issue session token
@@ -193,13 +172,9 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
       const wallet = result.parsed.address.toLowerCase();
       if (!WALLET_REGEX.test(wallet)) return invalidWallet();
 
-      // Verify nonce via DO (one-time use, prevents replay)
-      const stub = getDoStub(env, wallet);
-      const nonceRes = await stub.fetch(new Request(`${url.origin}/auth/verify-nonce`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-DO-Wallet': wallet },
-        body: JSON.stringify({ nonce: result.parsed.nonce }),
-      }));
+      // Verify nonce via DO RPC (one-time use, prevents replay)
+      const stub = getTypedStub(env, wallet);
+      const nonceRes = await stub.handleVerifyNonce(result.parsed.nonce);
       if (!nonceRes.ok) {
         const err = await nonceRes.json<{ error: string }>();
         return Response.json({ error: err.error || 'Nonce verification failed' }, { status: 401 });
@@ -220,7 +195,7 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
       // Peek at body to verify walletAddress matches token (prevents misuse)
       let body: DepositRequest;
       try {
-        body = await request.clone().json<DepositRequest>();
+        body = await request.json<DepositRequest>();
       } catch {
         return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
       }
@@ -241,8 +216,8 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
         // Let the DO handle malformed proof errors
       }
 
-      const stub = getDoStub(env, authWallet);
-      return stub.fetch(doRequest(request, authWallet));
+      const stub = getTypedStub(env, authWallet);
+      return stub.handleDeposit(body, url.hostname, authWallet);
     }
 
     // POST /infer — pay-per-use inference
@@ -264,7 +239,7 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
       // Peek at body to verify walletAddress matches token (prevents misuse)
       let body: InferRequest;
       try {
-        body = await request.clone().json<InferRequest>();
+        body = await request.json<InferRequest>();
       } catch {
         return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
           status: 400,
@@ -276,9 +251,10 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
         return Response.json({ error: 'walletAddress does not match authenticated session' }, { status: 403 });
       }
 
-      // Route to the authenticated wallet's DO
-      const stub = getDoStub(env, authWallet);
-      const doResponse = await stub.fetch(doRequest(request, authWallet));
+      // Route to the authenticated wallet's DO via RPC
+      const paymentSig = request.headers.get('PAYMENT-SIGNATURE');
+      const stub = getTypedStub(env, authWallet);
+      const doResponse = await stub.handleInfer(body, paymentSig, url.hostname, authWallet);
 
       // If 402 returned, augment with SIWX extension so clients can discover auth
       if (doResponse.status === 402) {
@@ -301,8 +277,8 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
       const authWallet = await extractAuthWallet(request, env);
       if (!authWallet) return unauthorized();
 
-      const stub = getDoStub(env, authWallet);
-      return stub.fetch(doSimpleRequest(`${url.origin}/balance`, 'GET', authWallet));
+      const stub = getTypedStub(env, authWallet);
+      return stub.handleBalance();
     }
 
     // GET /history — conversation history (wallet derived from token)
@@ -310,8 +286,8 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
       const authWallet = await extractAuthWallet(request, env);
       if (!authWallet) return unauthorized();
 
-      const stub = getDoStub(env, authWallet);
-      return stub.fetch(doSimpleRequest(`${url.origin}/history`, 'GET', authWallet));
+      const stub = getTypedStub(env, authWallet);
+      return stub.handleHistory();
     }
 
     // DELETE /history — clear conversation history (wallet derived from token)
@@ -319,8 +295,8 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
       const authWallet = await extractAuthWallet(request, env);
       if (!authWallet) return unauthorized();
 
-      const stub = getDoStub(env, authWallet);
-      return stub.fetch(doSimpleRequest(`${url.origin}/history`, 'DELETE', authWallet));
+      const stub = getTypedStub(env, authWallet);
+      return stub.handleClearHistory();
     }
 
     return new Response('Not found', { status: 404 });
@@ -333,8 +309,8 @@ async function augment402WithSiwx(
   doResponse: Response, env: Env, wallet: string, url: URL,
 ): Promise<Response> {
   try {
-    const stub = getDoStub(env, wallet);
-    const nonceRes = await stub.fetch(doSimpleRequest(`${url.origin}/auth/nonce`, 'GET', wallet));
+    const stub = getTypedStub(env, wallet);
+    const nonceRes = await stub.handleNonce();
     const { nonce } = await nonceRes.json<{ nonce: string }>();
     const extension = buildSiwxExtension(url.host, url.href, nonce);
 

@@ -110,12 +110,15 @@ async function drainStream(response: Response): Promise<string> {
   return text;
 }
 
-function inferRequest(prompt = 'hello'): Request {
-  return new Request('http://localhost/infer', {
-    method: 'POST',
-    headers: { 'X-DO-Wallet': '0xtest', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, walletAddress: '0xtest' }),
-  });
+const TEST_WALLET = '0xtest';
+
+function inferBody(prompt = 'hello') {
+  return { prompt, walletAddress: TEST_WALLET };
+}
+
+/** Call handleInfer via RPC with defaults for tests */
+function callInfer(gate: InferenceGate, prompt = 'hello') {
+  return gate.handleInfer(inferBody(prompt), null, 'localhost', TEST_WALLET);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -126,7 +129,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
     const { gate, storage, waitUntilPromises } = makeTestDO();
     storage._data.set('balance', 1000);
 
-    const response = await gate.fetch(inferRequest());
+    const response = await callInfer(gate);
     expect(response.status).toBe(200);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
@@ -143,7 +146,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
     storage._data.set('balance', 1000);
 
-    const response = await gate.fetch(inferRequest());
+    const response = await callInfer(gate);
     expect(response.status).toBe(200);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
@@ -162,7 +165,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: errorStream });
     storage._data.set('balance', 500);
 
-    const response = await gate.fetch(inferRequest());
+    const response = await callInfer(gate);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
@@ -178,7 +181,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: brokenStream });
     storage._data.set('balance', 500);
 
-    const response = await gate.fetch(inferRequest());
+    const response = await callInfer(gate);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
@@ -191,7 +194,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
     storage._data.set('balance', 1000);
 
-    const response = await gate.fetch(inferRequest());
+    const response = await callInfer(gate);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
@@ -203,7 +206,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
     storage._data.set('balance', 1000);
 
-    const response = await gate.fetch(inferRequest());
+    const response = await callInfer(gate);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
@@ -219,7 +222,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: shortStream });
     storage._data.set('balance', 1000);
 
-    const response = await gate.fetch(inferRequest('Is 2+2=4?'));
+    const response = await callInfer(gate, 'Is 2+2=4?');
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
@@ -231,7 +234,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
     const { gate, storage, waitUntilPromises } = makeTestDO();
     storage._data.set('balance', 1000);
 
-    const response = await gate.fetch(inferRequest('What is AI?'));
+    const response = await callInfer(gate, 'What is AI?');
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
@@ -250,16 +253,12 @@ describe('InferenceGate — credit refund on AI failure', () => {
     storage._data.set('balance', 1000);
 
     // Trigger a failed inference first
-    const inferRes = await gate.fetch(inferRequest());
+    const inferRes = await callInfer(gate);
     await drainStream(inferRes);
     await Promise.allSettled(waitUntilPromises);
 
-    // Now check /balance
-    const balanceReq = new Request('http://localhost/balance', {
-      method: 'GET',
-      headers: { 'X-DO-Wallet': '0xtest' },
-    });
-    const balanceRes = await gate.fetch(balanceReq);
+    // Now check /balance via RPC
+    const balanceRes = await gate.handleBalance();
     const body = await balanceRes.json() as { totalFailedRequests: number; balance: number };
 
     expect(body.totalFailedRequests).toBe(1);
@@ -403,11 +402,7 @@ describe('InferenceGate — alarm re-verification', () => {
     storage._data.set('balance', 2000);
     storage._data.set('provisionalBalance', 1000);
 
-    const balanceReq = new Request('http://localhost/balance', {
-      method: 'GET',
-      headers: { 'X-DO-Wallet': '0xtest' },
-    });
-    const res = await gate.fetch(balanceReq);
+    const res = await gate.handleBalance();
     const body = await res.json() as { provisionalMicroUSDC: number };
 
     expect(body.provisionalMicroUSDC).toBe(1000);
