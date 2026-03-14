@@ -22,9 +22,20 @@ function corsHeaders(origin: string): Record<string, string> {
   };
 }
 
+function securityHeaders(): Record<string, string> {
+  return {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+  };
+}
+
 function withCors(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);
   for (const [k, v] of Object.entries(corsHeaders(origin))) {
+    headers.set(k, v);
+  }
+  for (const [k, v] of Object.entries(securityHeaders())) {
     headers.set(k, v);
   }
   return new Response(response.body, {
@@ -120,7 +131,7 @@ export default {
 
     // ── CORS preflight ────────────────────────────────────────────────────
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(origin) });
+      return new Response(null, { status: 204, headers: { ...corsHeaders(origin), ...securityHeaders() } });
     }
 
     const response = await handleRequest(request, env, url);

@@ -176,6 +176,54 @@ describe('CORS', () => {
   });
 });
 
+// ── Security Headers ──────────────────────────────────────────────────────────
+
+describe('Security headers', () => {
+  it('GET /health includes X-Content-Type-Options: nosniff', async () => {
+    const req = new Request('https://dox402.example.com/health', { method: 'GET' });
+    const res = await worker.fetch(req, makeEnv());
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+  });
+
+  it('GET /health includes X-Frame-Options: DENY', async () => {
+    const req = new Request('https://dox402.example.com/health', { method: 'GET' });
+    const res = await worker.fetch(req, makeEnv());
+    expect(res.headers.get('X-Frame-Options')).toBe('DENY');
+  });
+
+  it('GET /health includes Referrer-Policy', async () => {
+    const req = new Request('https://dox402.example.com/health', { method: 'GET' });
+    const res = await worker.fetch(req, makeEnv());
+    expect(res.headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+  });
+
+  it('OPTIONS preflight includes security headers', async () => {
+    const req = new Request('https://dox402.example.com/infer', { method: 'OPTIONS' });
+    const res = await worker.fetch(req, makeEnv());
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(res.headers.get('X-Frame-Options')).toBe('DENY');
+    expect(res.headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+  });
+
+  it('404 responses include security headers', async () => {
+    const req = new Request('https://dox402.example.com/nonexistent', { method: 'GET' });
+    const res = await worker.fetch(req, makeEnv());
+    expect(res.status).toBe(404);
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(res.headers.get('X-Frame-Options')).toBe('DENY');
+  });
+
+  it('GET /payment-info includes security headers alongside Cache-Control', async () => {
+    const req = new Request('https://dox402.example.com/payment-info', { method: 'GET' });
+    const res = await worker.fetch(req, makeEnv());
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(res.headers.get('X-Frame-Options')).toBe('DENY');
+    expect(res.headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+  });
+});
+
 // ── SIWX Integration ──────────────────────────────────────────────────────────
 
 describe('SIWX on /infer', () => {

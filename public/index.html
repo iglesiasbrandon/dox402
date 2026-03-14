@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
   <title>dox402 · pay-per-use AI</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 36 36' fill='none'%3E%3Crect width='36' height='36' rx='8' fill='%23181818'/%3E%3Cpolygon points='18,8 27,13 18,18 9,13' fill='%232a1a08'/%3E%3Cpolygon points='27,13 27,23 18,28 18,18' fill='%23231508'/%3E%3Cpolygon points='9,13 18,18 18,28 9,23' fill='%231a1008'/%3E%3Cg stroke='%23ff9540' stroke-width='1.5' stroke-linecap='round'%3E%3Cline x1='18' y1='8' x2='27' y2='13'/%3E%3Cline x1='27' y1='13' x2='27' y2='23'/%3E%3Cline x1='27' y1='23' x2='18' y2='28'/%3E%3Cline x1='18' y1='28' x2='9' y2='23'/%3E%3Cline x1='9' y1='23' x2='9' y2='13'/%3E%3Cline x1='9' y1='13' x2='18' y2='8'/%3E%3C/g%3E%3Cg stroke='%23f6821f' stroke-width='1' stroke-linecap='round'%3E%3Cline x1='18' y1='18' x2='27' y2='13'/%3E%3Cline x1='18' y1='18' x2='9' y2='13'/%3E%3Cline x1='18' y1='18' x2='18' y2='28'/%3E%3C/g%3E%3Cg fill='%23ffb870'%3E%3Ccircle cx='18' cy='8' r='1.6'/%3E%3Ccircle cx='27' cy='13' r='1.2'/%3E%3Ccircle cx='27' cy='23' r='1.2'/%3E%3Ccircle cx='18' cy='28' r='1.6'/%3E%3Ccircle cx='9' cy='23' r='1.2'/%3E%3Ccircle cx='9' cy='13' r='1.2'/%3E%3Ccircle cx='18' cy='18' r='1.1'/%3E%3C/g%3E%3C/svg%3E" />
   <style>
@@ -600,7 +601,7 @@ DELETE /history   clear conversation</pre>
       <div class="rp-title">Try it</div>
       <div class="balance-pill" id="pill">
         <span class="n" id="pillN">—</span>
-        <button class="pill-add-btn" id="pillAddBtn" onclick="toggleTopUp()" title="Add credits">+</button>
+        <button class="pill-add-btn" id="pillAddBtn" title="Add credits">+</button>
       </div>
     </div>
 
@@ -611,19 +612,19 @@ DELETE /history   clear conversation</pre>
         <span class="topup-inline-bal" id="topupBal">—</span>
       </div>
       <div class="topup-presets">
-        <div class="topup-preset sel" data-micro="1000" onclick="selectTopupPreset(this)">
+        <div class="topup-preset sel" data-micro="1000">
           <div class="topup-preset-cr">1,000</div>
           <div class="topup-preset-usd">$0.001</div>
         </div>
-        <div class="topup-preset" data-micro="5000" onclick="selectTopupPreset(this)">
+        <div class="topup-preset" data-micro="5000">
           <div class="topup-preset-cr">5,000</div>
           <div class="topup-preset-usd">$0.005</div>
         </div>
-        <div class="topup-preset" data-micro="10000" onclick="selectTopupPreset(this)">
+        <div class="topup-preset" data-micro="10000">
           <div class="topup-preset-cr">10,000</div>
           <div class="topup-preset-usd">$0.01</div>
         </div>
-        <div class="topup-preset" data-micro="50000" onclick="selectTopupPreset(this)">
+        <div class="topup-preset" data-micro="50000">
           <div class="topup-preset-cr">50,000</div>
           <div class="topup-preset-usd">$0.05</div>
         </div>
@@ -632,11 +633,11 @@ DELETE /history   clear conversation</pre>
       <div class="topup-custom-row">
         <label>USDC</label>
         <input id="topupCustom" type="number" min="0.001" step="0.001"
-               placeholder="e.g. 0.025" oninput="onTopupCustomInput()" />
+               placeholder="e.g. 0.025" />
       </div>
       <div class="topup-actions">
-        <button class="btn-pay" id="topupBtn" onclick="topUpWithWallet()">Add Credits →</button>
-        <button class="btn-ghost" onclick="hideTopUp()">Cancel</button>
+        <button class="btn-pay" id="topupBtn">Add Credits →</button>
+        <button class="btn-ghost" id="topupCancelBtn">Cancel</button>
       </div>
       <div id="topupStatus"></div>
     </div>
@@ -649,13 +650,13 @@ DELETE /history   clear conversation</pre>
       <div id="walletConnected" style="display:none">
         <div class="row">
           <div class="addr-box" id="connectedAddr"></div>
-          <button class="btn-ghost" onclick="disconnect()">Disconnect</button>
+          <button class="btn-ghost" id="disconnectBtn">Disconnect</button>
         </div>
       </div>
 
       <!-- Disconnected state -->
       <div id="walletDisconnected">
-        <button class="btn-wallet" id="connectBtn" onclick="connectInjected()">
+        <button class="btn-wallet" id="connectBtn">
           Connect Wallet
         </button>
       </div>
@@ -670,11 +671,11 @@ DELETE /history   clear conversation</pre>
       <div class="step-label">Send <strong>0.001 USDC</strong> on Base Mainnet to:</div>
       <div class="row" style="margin-bottom: 4px">
         <div class="addr-box" id="payAddr">—</div>
-        <button class="btn-ghost" onclick="copyAddr()">Copy</button>
+        <button class="btn-ghost" id="copyAddrBtn">Copy</button>
       </div>
 
       <!-- Primary: one-click wallet payment -->
-      <button class="btn-pay" id="payWalletBtn" onclick="payWithWallet()">
+      <button class="btn-pay" id="payWalletBtn">
         Pay with Wallet →
       </button>
       <div id="payStatus"></div>
@@ -701,7 +702,7 @@ DELETE /history   clear conversation</pre>
       <!-- Live token counter + estimate toggle -->
       <div id="estRow" style="display:none;margin-top:7px;align-items:center;justify-content:space-between">
         <span id="estTokens" style="font-size:11px;color:var(--muted);font-family:var(--mono)"></span>
-        <button class="btn-ghost" style="font-size:11px;padding:4px 10px" onclick="toggleEstimate()">Estimate cost →</button>
+        <button class="btn-ghost" id="estToggleBtn" style="font-size:11px;padding:4px 10px">Estimate cost →</button>
       </div>
       <!-- Estimate breakdown card -->
       <div class="card" id="estCard" style="display:none;margin-top:10px;padding:14px 16px">
@@ -709,7 +710,7 @@ DELETE /history   clear conversation</pre>
         <div id="estBody" style="font-family:var(--mono);font-size:12px;color:var(--muted);line-height:2.1"></div>
         <div style="font-size:11px;color:var(--muted);margin-top:10px;opacity:0.55">output range assumes 400–2,000 chars</div>
       </div>
-      <button class="btn-primary" id="sendBtn" onclick="submit()">Send →</button>
+      <button class="btn-primary" id="sendBtn">Send →</button>
     </div>
 
     <!-- Conversation -->
@@ -720,8 +721,8 @@ DELETE /history   clear conversation</pre>
           <span id="statusTxt">Conversation History</span>
         </div>
         <div class="resp-actions">
-          <button class="btn-ghost" onclick="copyLast()">Copy</button>
-          <button class="btn-ghost" onclick="clearHistory()">Clear</button>
+          <button class="btn-ghost" id="copyLastBtn">Copy</button>
+          <button class="btn-ghost" id="clearHistoryBtn">Clear</button>
         </div>
       </div>
       <div class="convo-thread" id="convoThread">
@@ -767,6 +768,10 @@ DELETE /history   clear conversation</pre>
       method: 'personal_sign',
       params: [message, signerAddress],
     });
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   function countChars(text) { return (text || '').length; }
@@ -1018,12 +1023,12 @@ DELETE /history   clear conversation</pre>
 
     document.getElementById('estBody').innerHTML = `
       <div style="display:grid;grid-template-columns:1fr auto;gap:4px 24px;align-items:baseline">
-        <span style="color:var(--muted)">Prompt</span>             <span style="color:var(--text)">${promptChars.toLocaleString()} chars</span>
-        <span style="color:var(--muted)">History</span>            <span style="color:var(--text)">${histChars.toLocaleString()} chars</span>
-        <span style="color:var(--muted)">Total input</span>        <span style="color:var(--text);font-weight:600">~${totalChars.toLocaleString()} chars</span>
+        <span style="color:var(--muted)">Prompt</span>             <span style="color:var(--text)">${escapeHtml(promptChars.toLocaleString())} chars</span>
+        <span style="color:var(--muted)">History</span>            <span style="color:var(--text)">${escapeHtml(histChars.toLocaleString())} chars</span>
+        <span style="color:var(--muted)">Total input</span>        <span style="color:var(--text);font-weight:600">~${escapeHtml(totalChars.toLocaleString())} chars</span>
         <span style="color:var(--border);grid-column:1/-1;border-top:1px solid var(--border);margin:4px 0"></span>
-        <span style="color:var(--muted)">Output (estimated)</span> <span style="color:var(--muted)">${(outMinToks*4).toLocaleString()}–${(outMaxToks*4).toLocaleString()} chars</span>
-        <span style="color:var(--muted)">Credits</span>            <span style="color:var(--accent)">~${costMinCr === costMaxCr ? costMinCr : costMinCr + '–' + costMaxCr}</span>
+        <span style="color:var(--muted)">Output (estimated)</span> <span style="color:var(--muted)">${escapeHtml((outMinToks*4).toLocaleString())}–${escapeHtml((outMaxToks*4).toLocaleString())} chars</span>
+        <span style="color:var(--muted)">Credits</span>            <span style="color:var(--accent)">~${escapeHtml(costMinCr === costMaxCr ? String(costMinCr) : costMinCr + '–' + costMaxCr)}</span>
       </div>`;
   }
 
@@ -1444,15 +1449,15 @@ DELETE /history   clear conversation</pre>
     const modelLabel = (opts.model || '').split('/').pop() || 'unknown';
     const costText = opts.cost != null ? fmtBalance(opts.cost) : 'calculating…';
     meta.innerHTML = `
-      <div class="msg-meta-row"><span>Cost</span><span class="msg-meta-cost">${costText}</span></div>
-      <div class="msg-meta-row"><span>Model</span><span>${modelLabel}</span></div>`;
+      <div class="msg-meta-row"><span>Cost</span><span class="msg-meta-cost">${escapeHtml(costText)}</span></div>
+      <div class="msg-meta-row"><span>Model</span><span>${escapeHtml(modelLabel)}</span></div>`;
 
-    btn.onclick = () => {
+    btn.addEventListener('click', () => {
       meta.classList.toggle('open');
       if (meta.classList.contains('open')) {
         meta.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
-    };
+    });
 
     const roleEl = msgEl.querySelector('.msg-role');
     roleEl.appendChild(btn);
@@ -1551,6 +1556,23 @@ DELETE /history   clear conversation</pre>
     if (!msgs.length) return;
     navigator.clipboard.writeText(msgs[msgs.length - 1].textContent);
   }
+
+  // ── Event listener registration (no inline handlers) ──────────────────────
+  document.getElementById('pillAddBtn').addEventListener('click', toggleTopUp);
+  document.querySelectorAll('.topup-preset').forEach(el => {
+    el.addEventListener('click', () => selectTopupPreset(el));
+  });
+  document.getElementById('topupCustom').addEventListener('input', onTopupCustomInput);
+  document.getElementById('topupBtn').addEventListener('click', topUpWithWallet);
+  document.getElementById('topupCancelBtn').addEventListener('click', hideTopUp);
+  document.getElementById('disconnectBtn').addEventListener('click', disconnect);
+  document.getElementById('connectBtn').addEventListener('click', connectInjected);
+  document.getElementById('copyAddrBtn').addEventListener('click', copyAddr);
+  document.getElementById('payWalletBtn').addEventListener('click', payWithWallet);
+  document.getElementById('estToggleBtn').addEventListener('click', toggleEstimate);
+  document.getElementById('sendBtn').addEventListener('click', submit);
+  document.getElementById('copyLastBtn').addEventListener('click', copyLast);
+  document.getElementById('clearHistoryBtn').addEventListener('click', clearHistory);
 </script>
 
 
