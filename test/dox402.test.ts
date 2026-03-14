@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
 
 // Mock cloudflare:workers (imported transitively via dox402.ts)
 vi.mock('cloudflare:workers', () => ({
@@ -13,6 +14,7 @@ vi.mock('cloudflare:workers', () => ({
 }));
 
 import { InferenceGate } from '../src/dox402';
+import { MIGRATIONS } from '../src/migrations';
 import type { Env, PendingVerification, VerifyProofResult } from '../src/types';
 import * as x402Module from '../src/x402';
 
@@ -40,33 +42,69 @@ function erroringSSEStream(initialChunks: string[], error: Error): ReadableStrea
   });
 }
 
+/** Build a better-sqlite3 backed mock that matches Cloudflare's ctx.storage.sql API */
 function makeMockStorage() {
-  const data = new Map<string, unknown>();
+  const db = new Database(':memory:');
   let alarm: number | null = null;
-  return {
-    get: vi.fn(async <T>(key: string): Promise<T | undefined> => data.get(key) as T),
-    put: vi.fn(async (key: string, value: unknown) => { data.set(key, value); }),
-    delete: vi.fn(async (key: string) => data.delete(key)),
-    transaction: vi.fn(async (cb: (txn: { get: typeof data.get; put: typeof data.set }) => Promise<void>) => {
-      const txn = {
-        get: async <T>(key: string): Promise<T | undefined> => data.get(key) as T,
-        put: async (key: string, value: unknown) => { data.set(key, value); },
-      };
-      await cb(txn);
-    }),
-    list: vi.fn(async (opts?: { prefix?: string }) => {
-      const result = new Map<string, unknown>();
-      for (const [key, value] of data.entries()) {
-        if (!opts?.prefix || key.startsWith(opts.prefix)) {
-          result.set(key, value);
-        }
+
+  const sqlMock = {
+    exec: <T = Record<string, unknown>>(query: string, ...bindings: unknown[]) => {
+      const stmt = db.prepare(query);
+      const isRead = /^\s*(SELECT|WITH|PRAGMA)/i.test(query);
+      if (isRead) {
+        const rows = stmt.all(...bindings) as T[];
+        return {
+          toArray: () => rows,
+          one: () => { if (!rows.length) throw new Error('No rows'); return rows[0]; },
+          [Symbol.iterator]: function* () { yield* rows; },
+          columnNames: [] as string[],
+          rowsRead: rows.length,
+          rowsWritten: 0,
+        };
+      } else {
+        const info = stmt.run(...bindings);
+        return {
+          toArray: () => [] as T[],
+          one: () => { throw new Error('No rows'); },
+          [Symbol.iterator]: function* () {},
+          columnNames: [] as string[],
+          rowsRead: 0,
+          rowsWritten: info.changes,
+        };
       }
-      return result;
+    },
+  };
+
+  // Run schema migrations (same as production)
+  sqlMock.exec(`CREATE TABLE IF NOT EXISTS _schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at INTEGER NOT NULL
+  )`);
+  for (const [version, up] of MIGRATIONS) {
+    up(sqlMock);
+    sqlMock.exec('INSERT INTO _schema_migrations (version, applied_at) VALUES (?, ?)',
+      version, Date.now());
+  }
+
+  return {
+    sql: sqlMock,
+    // KV stubs — used only by migrateFromKV (return empty for fresh test DOs)
+    get: vi.fn(async () => undefined),
+    put: vi.fn(async () => {}),
+    delete: vi.fn(async () => false),
+    list: vi.fn(async () => new Map()),
+    transaction: vi.fn(async (cb: Function) => {
+      await cb({ get: async () => undefined, put: async () => {} });
     }),
+    transactionSync: <T>(cb: () => T): T => {
+      return db.transaction(cb)();
+    },
     getAlarm: vi.fn(async () => alarm),
-    setAlarm: vi.fn(async (time: number | Date) => { alarm = typeof time === 'number' ? time : time.getTime(); }),
+    setAlarm: vi.fn(async (time: number | Date) => {
+      alarm = typeof time === 'number' ? time : time.getTime();
+    }),
     deleteAlarm: vi.fn(async () => { alarm = null; }),
-    _data: data,
+    _db: db,
     _getAlarm: () => alarm,
   };
 }
@@ -131,40 +169,69 @@ function callInfer(gate: InferenceGate, prompt = 'hello') {
   return gate.handleInfer(inferBody(prompt), null, 'localhost', TEST_WALLET);
 }
 
+// ── SQL helper for test setup/assertions ─────────────────────────────────────
+
+function setBalance(storage: ReturnType<typeof makeMockStorage>, balance: number) {
+  storage.sql.exec('UPDATE wallet_state SET balance = ? WHERE id = 1', balance);
+}
+
+function getBalance(storage: ReturnType<typeof makeMockStorage>): number {
+  return (storage.sql.exec<{ balance: number }>('SELECT balance FROM wallet_state WHERE id = 1').toArray()[0]!).balance;
+}
+
+function getWalletState(storage: ReturnType<typeof makeMockStorage>) {
+  return storage.sql.exec<{
+    balance: number;
+    total_deposited: number;
+    total_spent: number;
+    total_requests: number;
+    total_failed_requests: number;
+    provisional_balance: number;
+    last_used_at: number | null;
+  }>('SELECT * FROM wallet_state WHERE id = 1').toArray()[0]!;
+}
+
+function getHistoryRows(storage: ReturnType<typeof makeMockStorage>) {
+  return storage.sql.exec<{ role: string; content: string; cost: number | null; model: string | null }>(
+    'SELECT role, content, cost, model FROM history ORDER BY id',
+  ).toArray();
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('InferenceGate — credit refund on AI failure', () => {
 
   it('deducts credits on successful inference', async () => {
     const { gate, storage, waitUntilPromises } = makeTestDO();
-    storage._data.set('balance', 1000);
+    setBalance(storage, 1000);
 
     const response = await callInfer(gate);
     expect(response.status).toBe(200);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
-    const balance = storage._data.get('balance') as number;
-    expect(balance).toBeLessThan(1000);
-    expect(storage._data.get('totalSpentMicroUSDC')).toBeGreaterThan(0);
-    expect(storage._data.get('totalRequests')).toBe(1);
-    expect(storage._data.get('totalFailedRequests')).toBeUndefined();
+    const state = getWalletState(storage);
+    expect(state.balance).toBeLessThan(1000);
+    expect(state.total_spent).toBeGreaterThan(0);
+    expect(state.total_requests).toBe(1);
+    expect(state.total_failed_requests).toBe(0);
   });
 
   it('does NOT deduct credits when AI returns empty SSE stream', async () => {
     const emptyStream = mockSSEStream(['data: [DONE]\n\n']);
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
-    storage._data.set('balance', 1000);
+    setBalance(storage, 1000);
 
     const response = await callInfer(gate);
     expect(response.status).toBe(200);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
-    expect(storage._data.get('balance')).toBe(1000);
-    expect(storage._data.get('totalSpentMicroUSDC')).toBeUndefined();
-    expect(storage._data.get('totalFailedRequests')).toBe(1);
-    expect(storage._data.get('totalRequests')).toBe(1);
+    const state = getWalletState(storage);
+    expect(state.balance).toBe(1000);
+    expect(state.total_spent).toBe(0);
+    expect(state.total_failed_requests).toBe(1);
+    expect(state.total_requests).toBe(1);
   });
 
   it('does NOT deduct credits when AI returns error JSON in SSE', async () => {
@@ -173,14 +240,15 @@ describe('InferenceGate — credit refund on AI failure', () => {
       'data: [DONE]\n\n',
     ]);
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: errorStream });
-    storage._data.set('balance', 500);
+    setBalance(storage, 500);
 
     const response = await callInfer(gate);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
-    expect(storage._data.get('balance')).toBe(500);
-    expect(storage._data.get('totalFailedRequests')).toBe(1);
+    const state = getWalletState(storage);
+    expect(state.balance).toBe(500);
+    expect(state.total_failed_requests).toBe(1);
   });
 
   it('does NOT deduct credits when stream errors mid-read', async () => {
@@ -189,38 +257,40 @@ describe('InferenceGate — credit refund on AI failure', () => {
       new Error('network timeout'),
     );
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: brokenStream });
-    storage._data.set('balance', 500);
+    setBalance(storage, 500);
 
     const response = await callInfer(gate);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
-    expect(storage._data.get('balance')).toBe(500);
-    expect(storage._data.get('totalFailedRequests')).toBe(1);
+    const state = getWalletState(storage);
+    expect(state.balance).toBe(500);
+    expect(state.total_failed_requests).toBe(1);
   });
 
   it('does NOT append failed response to conversation history', async () => {
     const emptyStream = mockSSEStream(['data: [DONE]\n\n']);
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
-    storage._data.set('balance', 1000);
+    setBalance(storage, 1000);
 
     const response = await callInfer(gate);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
-    expect(storage._data.get('history')).toBeUndefined();
+    const history = getHistoryRows(storage);
+    expect(history.length).toBe(0);
   });
 
   it('increments totalRequests even on failure', async () => {
     const emptyStream = mockSSEStream(['data: [DONE]\n\n']);
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
-    storage._data.set('balance', 1000);
+    setBalance(storage, 1000);
 
     const response = await callInfer(gate);
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
-    expect(storage._data.get('totalRequests')).toBe(1);
+    expect(getWalletState(storage).total_requests).toBe(1);
   });
 
   it('still deducts credits for legitimate short responses', async () => {
@@ -230,26 +300,26 @@ describe('InferenceGate — credit refund on AI failure', () => {
       'data: [DONE]\n\n',
     ]);
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: shortStream });
-    storage._data.set('balance', 1000);
+    setBalance(storage, 1000);
 
     const response = await callInfer(gate, 'Is 2+2=4?');
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
-    expect(storage._data.get('balance') as number).toBeLessThan(1000);
-    expect(storage._data.get('totalFailedRequests')).toBeUndefined();
+    const state = getWalletState(storage);
+    expect(state.balance).toBeLessThan(1000);
+    expect(state.total_failed_requests).toBe(0);
   });
 
   it('appends successful response to conversation history', async () => {
     const { gate, storage, waitUntilPromises } = makeTestDO();
-    storage._data.set('balance', 1000);
+    setBalance(storage, 1000);
 
     const response = await callInfer(gate, 'What is AI?');
     await drainStream(response);
     await Promise.allSettled(waitUntilPromises);
 
-    const history = storage._data.get('history') as { role: string; content: string }[];
-    expect(history).toBeDefined();
+    const history = getHistoryRows(storage);
     expect(history.length).toBe(2);
     expect(history[0].role).toBe('user');
     expect(history[0].content).toBe('What is AI?');
@@ -260,7 +330,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
   it('exposes totalFailedRequests in /balance response', async () => {
     const emptyStream = mockSSEStream(['data: [DONE]\n\n']);
     const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
-    storage._data.set('balance', 1000);
+    setBalance(storage, 1000);
 
     // Trigger a failed inference first
     const inferRes = await callInfer(gate);
@@ -295,52 +365,59 @@ describe('InferenceGate — alarm re-verification', () => {
     creditedAmount?: number;
   }) {
     const txHash = opts?.txHash ?? '0x' + 'a'.repeat(64);
-    const entry: PendingVerification = {
-      proof: {
-        txHash,
-        from: '0xtest',
-        amount: String(opts?.creditedAmount ?? 1000),
-        timestamp: Math.floor(Date.now() / 1000),
-        signature: '0xmocksig',
-      },
-      creditedAmount: opts?.creditedAmount ?? 1000,
-      createdAt: Date.now(),
-      retryCount: opts?.retryCount ?? 0,
-      status: 'pending',
+    const proof = {
+      txHash,
+      from: '0xtest',
+      amount: String(opts?.creditedAmount ?? 1000),
+      timestamp: Math.floor(Date.now() / 1000),
+      signature: '0xmocksig',
     };
-    storage._data.set(`pending:${txHash}`, entry);
-    storage._data.set('provisionalBalance', opts?.creditedAmount ?? 1000);
-    storage._data.set('walletAddress', '0xtest');
+
+    storage.sql.exec(
+      `INSERT INTO pending_verifications
+       (tx_hash, proof_json, credited_amount, created_at, retry_count, status)
+       VALUES (?, ?, ?, ?, ?, 'pending')`,
+      txHash, JSON.stringify(proof), opts?.creditedAmount ?? 1000,
+      Date.now(), opts?.retryCount ?? 0,
+    );
+    storage.sql.exec(
+      'UPDATE wallet_state SET provisional_balance = ?, wallet_address = ? WHERE id = 1',
+      opts?.creditedAmount ?? 1000, '0xtest',
+    );
   }
 
   it('confirms valid transaction on re-verification', async () => {
     const { gate, storage } = makeTestDO();
     setupPendingEntry(storage);
-    storage._data.set('balance', 1000);
+    setBalance(storage, 1000);
 
     verifyProofSpy.mockResolvedValue({ valid: true, amount: 1000 });
 
     await gate.alarm();
 
-    const entry = storage._data.get('pending:0x' + 'a'.repeat(64)) as PendingVerification;
+    const entry = storage.sql.exec<{ status: string }>(
+      'SELECT status FROM pending_verifications WHERE tx_hash = ?', '0x' + 'a'.repeat(64),
+    ).toArray()[0]!;
     expect(entry.status).toBe('confirmed');
-    expect(storage._data.get('provisionalBalance')).toBe(0);
-    expect(storage._data.get('balance')).toBe(1000); // balance unchanged
+    expect(getWalletState(storage).provisional_balance).toBe(0);
+    expect(getBalance(storage)).toBe(1000); // balance unchanged
   });
 
   it('reverses fraudulent transaction on re-verification', async () => {
     const { gate, storage } = makeTestDO();
     setupPendingEntry(storage, { creditedAmount: 1000 });
-    storage._data.set('balance', 1000);
+    setBalance(storage, 1000);
 
     verifyProofSpy.mockResolvedValue({ valid: false, reason: 'transaction reverted on-chain' });
 
     await gate.alarm();
 
-    const entry = storage._data.get('pending:0x' + 'a'.repeat(64)) as PendingVerification;
+    const entry = storage.sql.exec<{ status: string }>(
+      'SELECT status FROM pending_verifications WHERE tx_hash = ?', '0x' + 'a'.repeat(64),
+    ).toArray()[0]!;
     expect(entry.status).toBe('reversed');
-    expect(storage._data.get('provisionalBalance')).toBe(0);
-    expect(storage._data.get('balance')).toBe(0); // balance reversed
+    expect(getWalletState(storage).provisional_balance).toBe(0);
+    expect(getBalance(storage)).toBe(0); // balance reversed
   });
 
   it('reschedules alarm on continued RPC failure', async () => {
@@ -351,9 +428,11 @@ describe('InferenceGate — alarm re-verification', () => {
 
     await gate.alarm();
 
-    const entry = storage._data.get('pending:0x' + 'a'.repeat(64)) as PendingVerification;
+    const entry = storage.sql.exec<{ status: string; retry_count: number }>(
+      'SELECT status, retry_count FROM pending_verifications WHERE tx_hash = ?', '0x' + 'a'.repeat(64),
+    ).toArray()[0]!;
     expect(entry.status).toBe('pending');
-    expect(entry.retryCount).toBe(2);
+    expect(entry.retry_count).toBe(2);
     // Alarm should be rescheduled
     expect(storage.setAlarm).toHaveBeenCalled();
   });
@@ -366,10 +445,12 @@ describe('InferenceGate — alarm re-verification', () => {
 
     await gate.alarm();
 
-    const entry = storage._data.get('pending:0x' + 'a'.repeat(64)) as PendingVerification;
+    const entry = storage.sql.exec<{ status: string }>(
+      'SELECT status FROM pending_verifications WHERE tx_hash = ?', '0x' + 'a'.repeat(64),
+    ).toArray()[0]!;
     expect(entry.status).toBe('expired');
-    expect(storage._data.get('balance')).toBeUndefined(); // balance NOT deducted (benefit of doubt)
-    expect(storage._data.get('provisionalBalance')).toBe(0); // tracking cleared
+    expect(getBalance(storage)).toBe(0); // balance NOT deducted (benefit of doubt), starts at 0
+    expect(getWalletState(storage).provisional_balance).toBe(0); // tracking cleared
   });
 
   it('processes multiple pending entries in one alarm invocation', async () => {
@@ -377,19 +458,23 @@ describe('InferenceGate — alarm re-verification', () => {
     const txHash1 = '0x' + 'a'.repeat(64);
     const txHash2 = '0x' + 'b'.repeat(64);
 
-    const entry1: PendingVerification = {
-      proof: { txHash: txHash1, from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig1' },
-      creditedAmount: 1000, createdAt: Date.now(), retryCount: 0, status: 'pending',
-    };
-    const entry2: PendingVerification = {
-      proof: { txHash: txHash2, from: '0xtest', amount: '2000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig2' },
-      creditedAmount: 2000, createdAt: Date.now(), retryCount: 0, status: 'pending',
-    };
-    storage._data.set(`pending:${txHash1}`, entry1);
-    storage._data.set(`pending:${txHash2}`, entry2);
-    storage._data.set('provisionalBalance', 3000);
-    storage._data.set('walletAddress', '0xtest');
-    storage._data.set('balance', 3000);
+    const proof1 = { txHash: txHash1, from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig1' };
+    const proof2 = { txHash: txHash2, from: '0xtest', amount: '2000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig2' };
+
+    storage.sql.exec(
+      `INSERT INTO pending_verifications (tx_hash, proof_json, credited_amount, created_at, retry_count, status)
+       VALUES (?, ?, ?, ?, 0, 'pending')`,
+      txHash1, JSON.stringify(proof1), 1000, Date.now(),
+    );
+    storage.sql.exec(
+      `INSERT INTO pending_verifications (tx_hash, proof_json, credited_amount, created_at, retry_count, status)
+       VALUES (?, ?, ?, ?, 0, 'pending')`,
+      txHash2, JSON.stringify(proof2), 2000, Date.now(),
+    );
+    storage.sql.exec(
+      'UPDATE wallet_state SET provisional_balance = 3000, wallet_address = ?, balance = 3000 WHERE id = 1',
+      '0xtest',
+    );
 
     // First entry confirmed, second entry reversed
     verifyProofSpy
@@ -398,16 +483,23 @@ describe('InferenceGate — alarm re-verification', () => {
 
     await gate.alarm();
 
-    expect((storage._data.get(`pending:${txHash1}`) as PendingVerification).status).toBe('confirmed');
-    expect((storage._data.get(`pending:${txHash2}`) as PendingVerification).status).toBe('reversed');
-    expect(storage._data.get('provisionalBalance')).toBe(0);
-    expect(storage._data.get('balance')).toBe(1000); // 3000 - 2000 (reversed)
+    const e1 = storage.sql.exec<{ status: string }>(
+      'SELECT status FROM pending_verifications WHERE tx_hash = ?', txHash1,
+    ).toArray()[0]!;
+    const e2 = storage.sql.exec<{ status: string }>(
+      'SELECT status FROM pending_verifications WHERE tx_hash = ?', txHash2,
+    ).toArray()[0]!;
+    expect(e1.status).toBe('confirmed');
+    expect(e2.status).toBe('reversed');
+    expect(getWalletState(storage).provisional_balance).toBe(0);
+    expect(getBalance(storage)).toBe(1000); // 3000 - 2000 (reversed)
   });
 
   it('exposes provisionalMicroUSDC in /balance response', async () => {
     const { gate, storage } = makeTestDO();
-    storage._data.set('balance', 2000);
-    storage._data.set('provisionalBalance', 1000);
+    storage.sql.exec(
+      'UPDATE wallet_state SET balance = 2000, provisional_balance = 1000 WHERE id = 1',
+    );
 
     const res = await gate.handleBalance();
     const body = await res.json() as { provisionalMicroUSDC: number };
@@ -416,7 +508,7 @@ describe('InferenceGate — alarm re-verification', () => {
   });
 });
 
-// ── Storage cleanup — seen:{txHash} and terminal pending entries ─────────────
+// ── Storage cleanup — seen transactions and terminal pending entries ─────────
 
 describe('InferenceGate — storage cleanup', () => {
   let verifyProofSpy: ReturnType<typeof vi.spyOn>;
@@ -434,52 +526,59 @@ describe('InferenceGate — storage cleanup', () => {
 
   it('deletes seen keys older than retention period', async () => {
     const { gate, storage } = makeTestDO();
-    storage._data.set('walletAddress', '0xtest');
+    storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Old seen key (2 hours ago) — should be cleaned up
-    storage._data.set('seen:0x' + 'a'.repeat(64), Date.now() - 2 * ONE_HOUR_MS);
+    storage.sql.exec(
+      'INSERT INTO seen_transactions (tx_hash, created_at) VALUES (?, ?)',
+      '0x' + 'a'.repeat(64), Date.now() - 2 * ONE_HOUR_MS,
+    );
     // Recent seen key (5 minutes ago) — should be kept
-    storage._data.set('seen:0x' + 'b'.repeat(64), Date.now() - 5 * 60 * 1000);
+    storage.sql.exec(
+      'INSERT INTO seen_transactions (tx_hash, created_at) VALUES (?, ?)',
+      '0x' + 'b'.repeat(64), Date.now() - 5 * 60 * 1000,
+    );
 
     await gate.alarm();
 
-    expect(storage._data.has('seen:0x' + 'a'.repeat(64))).toBe(false);
-    expect(storage._data.has('seen:0x' + 'b'.repeat(64))).toBe(true);
+    const remaining = storage.sql.exec<{ tx_hash: string }>(
+      'SELECT tx_hash FROM seen_transactions',
+    ).toArray();
+    expect(remaining.length).toBe(1);
+    expect(remaining[0].tx_hash).toBe('0x' + 'b'.repeat(64));
   });
 
   it('deletes terminal pending entries older than 24 hours', async () => {
     const { gate, storage } = makeTestDO();
-    storage._data.set('walletAddress', '0xtest');
+    storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Old confirmed entry (48h ago) — should be cleaned up
-    const oldEntry: PendingVerification = {
-      proof: { txHash: '0x' + 'c'.repeat(64), from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig' },
-      creditedAmount: 1000,
-      createdAt: Date.now() - 2 * TWENTY_FOUR_HOURS_MS,
-      retryCount: 1,
-      status: 'confirmed',
-    };
-    storage._data.set('pending:0x' + 'c'.repeat(64), oldEntry);
+    const proof = { txHash: '0x' + 'c'.repeat(64), from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig' };
+    storage.sql.exec(
+      `INSERT INTO pending_verifications (tx_hash, proof_json, credited_amount, created_at, retry_count, status)
+       VALUES (?, ?, 1000, ?, 1, 'confirmed')`,
+      '0x' + 'c'.repeat(64), JSON.stringify(proof), Date.now() - 2 * TWENTY_FOUR_HOURS_MS,
+    );
 
     await gate.alarm();
 
-    expect(storage._data.has('pending:0x' + 'c'.repeat(64))).toBe(false);
+    const remaining = storage.sql.exec<{ tx_hash: string }>(
+      'SELECT tx_hash FROM pending_verifications',
+    ).toArray();
+    expect(remaining.length).toBe(0);
   });
 
   it('keeps active pending entries regardless of age', async () => {
     const { gate, storage } = makeTestDO();
-    storage._data.set('walletAddress', '0xtest');
+    storage.sql.exec('UPDATE wallet_state SET wallet_address = ?, provisional_balance = 1000 WHERE id = 1', '0xtest');
 
     // Old but still-pending entry — cleanup must NOT delete it
-    const activeEntry: PendingVerification = {
-      proof: { txHash: '0x' + 'd'.repeat(64), from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig' },
-      creditedAmount: 1000,
-      createdAt: Date.now() - 2 * TWENTY_FOUR_HOURS_MS,
-      retryCount: 3,
-      status: 'pending',
-    };
-    storage._data.set('pending:0x' + 'd'.repeat(64), activeEntry);
-    storage._data.set('provisionalBalance', 1000);
+    const proof = { txHash: '0x' + 'd'.repeat(64), from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig' };
+    storage.sql.exec(
+      `INSERT INTO pending_verifications (tx_hash, proof_json, credited_amount, created_at, retry_count, status)
+       VALUES (?, ?, 1000, ?, 3, 'pending')`,
+      '0x' + 'd'.repeat(64), JSON.stringify(proof), Date.now() - 2 * TWENTY_FOUR_HOURS_MS,
+    );
 
     // Grace mode will attempt re-verification — mock as still-provisional (RPC unreachable)
     verifyProofSpy.mockResolvedValue({ valid: true, provisional: true, reason: 'RPC timeout' });
@@ -487,17 +586,22 @@ describe('InferenceGate — storage cleanup', () => {
     await gate.alarm();
 
     // Entry should still exist and remain pending (not deleted by cleanup, kept by grace mode)
-    expect(storage._data.has('pending:0x' + 'd'.repeat(64))).toBe(true);
-    const kept = storage._data.get('pending:0x' + 'd'.repeat(64)) as PendingVerification;
-    expect(kept.status).toBe('pending');
+    const remaining = storage.sql.exec<{ status: string }>(
+      'SELECT status FROM pending_verifications WHERE tx_hash = ?', '0x' + 'd'.repeat(64),
+    ).toArray();
+    expect(remaining.length).toBe(1);
+    expect(remaining[0].status).toBe('pending');
   });
 
   it('reschedules alarm for remaining seen keys when no grace entries', async () => {
     const { gate, storage } = makeTestDO();
-    storage._data.set('walletAddress', '0xtest');
+    storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Recent seen key — not yet expired, should trigger cleanup alarm reschedule
-    storage._data.set('seen:0x' + 'e'.repeat(64), Date.now() - 5 * 60 * 1000);
+    storage.sql.exec(
+      'INSERT INTO seen_transactions (tx_hash, created_at) VALUES (?, ?)',
+      '0x' + 'e'.repeat(64), Date.now() - 5 * 60 * 1000,
+    );
 
     await gate.alarm();
 
@@ -511,36 +615,43 @@ describe('InferenceGate — storage cleanup', () => {
 
   it('does not reschedule alarm when all seen keys are cleaned up', async () => {
     const { gate, storage } = makeTestDO();
-    storage._data.set('walletAddress', '0xtest');
+    storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Only old seen key — will be cleaned up, no remaining keys
-    storage._data.set('seen:0x' + 'f'.repeat(64), Date.now() - 2 * ONE_HOUR_MS);
+    storage.sql.exec(
+      'INSERT INTO seen_transactions (tx_hash, created_at) VALUES (?, ?)',
+      '0x' + 'f'.repeat(64), Date.now() - 2 * ONE_HOUR_MS,
+    );
 
     storage.setAlarm.mockClear();
     await gate.alarm();
 
     // Old key should be deleted
-    expect(storage._data.has('seen:0x' + 'f'.repeat(64))).toBe(false);
+    const remaining = storage.sql.exec<{ tx_hash: string }>(
+      'SELECT tx_hash FROM seen_transactions',
+    ).toArray();
+    expect(remaining.length).toBe(0);
     // No alarm should be rescheduled (no remaining keys)
     expect(storage.setAlarm).not.toHaveBeenCalled();
   });
 
   it('keeps reversed/expired pending entries younger than 24h for audit', async () => {
     const { gate, storage } = makeTestDO();
-    storage._data.set('walletAddress', '0xtest');
+    storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Recent reversed entry (1h ago) — should be kept for audit
-    const recentReversed: PendingVerification = {
-      proof: { txHash: '0x' + 'a'.repeat(64), from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig' },
-      creditedAmount: 1000,
-      createdAt: Date.now() - ONE_HOUR_MS,
-      retryCount: 1,
-      status: 'reversed',
-    };
-    storage._data.set('pending:0x' + 'a'.repeat(64), recentReversed);
+    const proof = { txHash: '0x' + 'a'.repeat(64), from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig' };
+    storage.sql.exec(
+      `INSERT INTO pending_verifications (tx_hash, proof_json, credited_amount, created_at, retry_count, status)
+       VALUES (?, ?, 1000, ?, 1, 'reversed')`,
+      '0x' + 'a'.repeat(64), JSON.stringify(proof), Date.now() - ONE_HOUR_MS,
+    );
 
     await gate.alarm();
 
-    expect(storage._data.has('pending:0x' + 'a'.repeat(64))).toBe(true);
+    const remaining = storage.sql.exec<{ tx_hash: string }>(
+      'SELECT tx_hash FROM pending_verifications',
+    ).toArray();
+    expect(remaining.length).toBe(1);
   });
 });

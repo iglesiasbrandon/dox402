@@ -8,16 +8,140 @@ import {
 } from './constants';
 import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billing';
 import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce } from './types';
+import { MIGRATIONS } from './migrations';
 
 export class InferenceGate extends DurableObject<Env> {
   /** Wallet address — loaded once per activation via blockConcurrencyWhile() */
   private wallet = '';
 
+  /** Shorthand for the DO SQL storage API */
+  private get sql() { return this.ctx.storage.sql; }
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      this.wallet = (await ctx.storage.get<string>('walletAddress')) ?? '';
+      this.runMigrations();
+      await this.migrateFromKV();
+      const rows = this.sql.exec<{ wallet_address: string }>(
+        'SELECT wallet_address FROM wallet_state WHERE id = 1',
+      ).toArray();
+      this.wallet = rows[0]?.wallet_address ?? '';
     });
+  }
+
+  // ── Schema migration infrastructure ────────────────────────────────────────
+
+  /** Run unapplied SQL migrations in order (synchronous — all SQL) */
+  private runMigrations(): void {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS _schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at INTEGER NOT NULL
+    )`);
+    const applied = new Set(
+      this.sql.exec<{ version: string }>('SELECT version FROM _schema_migrations')
+        .toArray().map(r => r.version),
+    );
+    for (const [version, up] of MIGRATIONS) {
+      if (!applied.has(version)) {
+        up(this.sql);
+        this.sql.exec(
+          'INSERT INTO _schema_migrations (version, applied_at) VALUES (?, ?)',
+          version, Date.now(),
+        );
+      }
+    }
+  }
+
+  /** One-time KV → SQL data migration for existing DO instances.
+   *  Reads all KV data (async), writes to SQL (sync), then deletes KV keys. */
+  private async migrateFromKV(): Promise<void> {
+    // Already migrated if wallet_address is set in SQL
+    const rows = this.sql.exec<{ wallet_address: string }>(
+      'SELECT wallet_address FROM wallet_state WHERE id = 1',
+    ).toArray();
+    if (rows[0]?.wallet_address) return;
+
+    // Check if there's any KV data to migrate
+    const walletAddress = await this.ctx.storage.get<string>('walletAddress');
+    if (!walletAddress) return; // fresh DO — no KV data
+
+    // Migrate scalar wallet state
+    const balance = (await this.ctx.storage.get<number>('balance')) ?? 0;
+    const totalDeposited = (await this.ctx.storage.get<number>('totalDepositedMicroUSDC')) ?? 0;
+    const totalSpent = (await this.ctx.storage.get<number>('totalSpentMicroUSDC')) ?? 0;
+    const totalRequests = (await this.ctx.storage.get<number>('totalRequests')) ?? 0;
+    const totalFailedRequests = (await this.ctx.storage.get<number>('totalFailedRequests')) ?? 0;
+    const provisionalBalance = (await this.ctx.storage.get<number>('provisionalBalance')) ?? 0;
+    const lastUsedAt = (await this.ctx.storage.get<number>('lastUsedAt')) ?? null;
+
+    this.sql.exec(
+      `UPDATE wallet_state SET wallet_address=?, balance=?, total_deposited=?,
+       total_spent=?, total_requests=?, total_failed_requests=?,
+       provisional_balance=?, last_used_at=? WHERE id = 1`,
+      walletAddress, balance, totalDeposited, totalSpent,
+      totalRequests, totalFailedRequests, provisionalBalance, lastUsedAt,
+    );
+
+    // Migrate seen:{txHash} keys
+    const seenEntries = await this.ctx.storage.list({ prefix: 'seen:' });
+    for (const [key, value] of seenEntries) {
+      const txHash = key.slice('seen:'.length);
+      this.sql.exec(
+        'INSERT OR IGNORE INTO seen_transactions (tx_hash, created_at) VALUES (?, ?)',
+        txHash, value as number,
+      );
+    }
+
+    // Migrate pending:{txHash} keys
+    const pendingEntries = await this.ctx.storage.list({ prefix: 'pending:' });
+    for (const [key, value] of pendingEntries) {
+      const entry = value as PendingVerification;
+      const txHash = key.slice('pending:'.length);
+      this.sql.exec(
+        `INSERT OR IGNORE INTO pending_verifications
+         (tx_hash, proof_json, credited_amount, created_at, retry_count, status, last_attempt_at, last_error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        txHash, JSON.stringify(entry.proof), entry.creditedAmount,
+        entry.createdAt, entry.retryCount, entry.status,
+        entry.lastAttemptAt ?? null, entry.lastError ?? null,
+      );
+    }
+
+    // Migrate history JSON array
+    const history = (await this.ctx.storage.get<ConversationMessage[]>('history')) ?? [];
+    const now = Date.now();
+    for (let i = 0; i < history.length; i++) {
+      const msg = history[i];
+      this.sql.exec(
+        'INSERT INTO history (role, content, cost, model, created_at) VALUES (?, ?, ?, ?, ?)',
+        msg.role, msg.content,
+        msg.meta?.cost ?? null, msg.meta?.model ?? null,
+        now + i, // preserve ordering with incrementing timestamps
+      );
+    }
+
+    // Migrate nonces
+    const nonces = (await this.ctx.storage.get<StoredNonce[]>('siwe:nonces')) ?? [];
+    for (const n of nonces) {
+      this.sql.exec(
+        'INSERT OR IGNORE INTO nonces (nonce, created_at) VALUES (?, ?)',
+        n.nonce, n.createdAt,
+      );
+    }
+
+    // Delete all KV keys
+    const scalarKeys = [
+      'walletAddress', 'balance', 'totalDepositedMicroUSDC', 'totalSpentMicroUSDC',
+      'totalRequests', 'totalFailedRequests', 'provisionalBalance', 'history',
+      'lastUsedAt', 'siwe:nonces', 'pendingTxHashes',
+    ];
+    for (const key of scalarKeys) await this.ctx.storage.delete(key);
+    for (const key of seenEntries.keys()) await this.ctx.storage.delete(key);
+    for (const key of pendingEntries.keys()) await this.ctx.storage.delete(key);
+    const rlEntries = await this.ctx.storage.list({ prefix: 'rl:' });
+    for (const key of rlEntries.keys()) await this.ctx.storage.delete(key);
+
+    console.log('[dox402] KV → SQL migration complete for wallet %s', walletAddress);
   }
 
   /** Wallet address for the current context */
@@ -26,12 +150,16 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   /** Fixed-window rate limit: RATE_LIMIT_PER_MINUTE requests per 60-second window */
-  private async checkRateLimit(): Promise<Response | null> {
+  private checkRateLimit(): Response | null {
     const now = Math.floor(Date.now() / 1000);
     const windowStart = now - (now % 60);
-    const key = `rl:${windowStart}`;
 
-    const count = (await this.ctx.storage.get<number>(key)) ?? 0;
+    // Read current count (before increment)
+    const row = this.sql.exec<{ count: number }>(
+      'SELECT count FROM rate_limits WHERE window_start = ?', windowStart,
+    ).toArray()[0];
+    const count = row?.count ?? 0;
+
     if (count >= RATE_LIMIT_PER_MINUTE) {
       return Response.json(
         { error: 'Rate limit exceeded — try again shortly' },
@@ -39,8 +167,15 @@ export class InferenceGate extends DurableObject<Env> {
       );
     }
 
-    await this.ctx.storage.put(key, count + 1);
-    await this.ctx.storage.delete(`rl:${windowStart - 60}`);
+    // Atomic upsert: increment count for current window
+    this.sql.exec(
+      `INSERT INTO rate_limits (window_start, count) VALUES (?, 1)
+       ON CONFLICT(window_start) DO UPDATE SET count = count + 1`,
+      windowStart,
+    );
+
+    // Clean up old windows
+    this.sql.exec('DELETE FROM rate_limits WHERE window_start < ?', windowStart);
     return null;
   }
 
@@ -57,23 +192,31 @@ export class InferenceGate extends DurableObject<Env> {
     // Persist wallet only on first-ever request (subsequent activations load via constructor)
     if (!this.wallet) {
       this.wallet = wallet;
-      await this.ctx.storage.put('walletAddress', wallet);
+      this.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', wallet);
     }
 
-    const limited = await this.checkRateLimit();
+    const limited = this.checkRateLimit();
     if (limited) return limited;
 
     // Step 1: Load current µUSDC balance
-    const balance = (await this.ctx.storage.get<number>('balance')) ?? 0;
+    const walletRow = this.sql.exec<{ balance: number }>(
+      'SELECT balance FROM wallet_state WHERE id = 1',
+    ).toArray()[0]!;
+    const balance = walletRow.balance;
 
     // Step 2: No proof and no balance → return 402
     if (!paymentSignature && balance === 0) {
       return build402Response(this.env.PAYMENT_ADDRESS);
     }
 
-    // Load conversation history
-    const history = (await this.ctx.storage.get<ConversationMessage[]>('history')) ?? [];
-    const messages: ConversationMessage[] = [...history, { role: 'user', content: body.prompt }];
+    // Load conversation history from SQL
+    const historyRows = this.sql.exec<{ role: string; content: string }>(
+      'SELECT role, content FROM history ORDER BY id',
+    ).toArray();
+    const messages: ConversationMessage[] = [
+      ...historyRows.map(r => ({ role: r.role as 'user' | 'assistant', content: r.content })),
+      { role: 'user', content: body.prompt },
+    ];
 
     // Step 3: No proof but has balance → run inference (cost deducted post-stream)
     if (!paymentSignature) {
@@ -105,7 +248,7 @@ export class InferenceGate extends DurableObject<Env> {
     // Step 6b: Grace mode — provisional credit when RPC is unreachable
     let isProvisional = false;
     if (check.provisional) {
-      const canGrace = await this.canActivateGraceMode(check.amount ?? PAYMENT_MICRO_USDC);
+      const canGrace = this.canActivateGraceMode(check.amount ?? PAYMENT_MICRO_USDC);
       if (!canGrace) {
         return new Response(JSON.stringify({
           error: 'RPC unavailable and provisional credit limit reached — please retry later',
@@ -115,37 +258,46 @@ export class InferenceGate extends DurableObject<Env> {
     }
 
     // Steps 7–8: Atomic transaction — replay check + balance top-up
-    // Use actual on-chain transfer amount (verified by verifyProof); fall back to constant
     const creditAmount = check.amount ?? PAYMENT_MICRO_USDC;
     let newBalance = 0;
     try {
-      await this.ctx.storage.transaction(async (txn) => {
-        const seenKey = `seen:${proof.txHash}`;
-        if (await txn.get(seenKey)) {
+      this.ctx.storage.transactionSync(() => {
+        const seen = this.sql.exec<{ tx_hash: string }>(
+          'SELECT tx_hash FROM seen_transactions WHERE tx_hash = ?', proof.txHash,
+        ).toArray();
+        if (seen.length > 0) {
           throw new Error('txHash already used');
         }
-        await txn.put(seenKey, Date.now());
 
-        const current = (await txn.get<number>('balance')) ?? 0;
-        newBalance = current + creditAmount; // add actual payment amount; cost deducted post-stream
-        await txn.put('balance', newBalance);
+        this.sql.exec(
+          'INSERT INTO seen_transactions (tx_hash, created_at) VALUES (?, ?)',
+          proof.txHash, Date.now(),
+        );
 
-        const deposited = (await txn.get<number>('totalDepositedMicroUSDC')) ?? 0;
-        await txn.put('totalDepositedMicroUSDC', deposited + creditAmount);
+        this.sql.exec(
+          'UPDATE wallet_state SET balance = balance + ?, total_deposited = total_deposited + ? WHERE id = 1',
+          creditAmount, creditAmount,
+        );
+
+        // Read back the new balance for use after the transaction
+        const row = this.sql.exec<{ balance: number }>(
+          'SELECT balance FROM wallet_state WHERE id = 1',
+        ).toArray()[0]!;
+        newBalance = row.balance;
 
         // Grace mode: store pending entry for async re-verification
         if (isProvisional && check.pendingProof) {
-          const pendingKey = `pending:${proof.txHash}`;
-          await txn.put(pendingKey, {
-            proof: check.pendingProof,
-            creditedAmount: creditAmount,
-            createdAt: Date.now(),
-            retryCount: 0,
-            status: 'pending',
-          } satisfies PendingVerification);
+          this.sql.exec(
+            `INSERT INTO pending_verifications
+             (tx_hash, proof_json, credited_amount, created_at, retry_count, status)
+             VALUES (?, ?, ?, ?, 0, 'pending')`,
+            proof.txHash, JSON.stringify(check.pendingProof), creditAmount, Date.now(),
+          );
 
-          const provBal = (await txn.get<number>('provisionalBalance')) ?? 0;
-          await txn.put('provisionalBalance', provBal + creditAmount);
+          this.sql.exec(
+            'UPDATE wallet_state SET provisional_balance = provisional_balance + ? WHERE id = 1',
+            creditAmount,
+          );
         }
       });
     } catch (err: unknown) {
@@ -231,11 +383,13 @@ export class InferenceGate extends DurableObject<Env> {
 
       if (!validation.ok) {
         console.error(`[InferenceGate] Skipping billing: ${validation.reason}`);
-        await this.ctx.storage.put('lastUsedAt', Date.now());
-        const requests = (await this.ctx.storage.get<number>('totalRequests')) ?? 0;
-        await this.ctx.storage.put('totalRequests', requests + 1);
-        const failedRequests = (await this.ctx.storage.get<number>('totalFailedRequests')) ?? 0;
-        await this.ctx.storage.put('totalFailedRequests', failedRequests + 1);
+        this.sql.exec(
+          `UPDATE wallet_state SET last_used_at = ?,
+           total_requests = total_requests + 1,
+           total_failed_requests = total_failed_requests + 1
+           WHERE id = 1`,
+          Date.now(),
+        );
         return; // no billing, no history
       }
 
@@ -245,26 +399,35 @@ export class InferenceGate extends DurableObject<Env> {
 
       // Deduct actual cost from balance (uses char-count fallback if token usage is zero)
       const cost = computeCostMicroUSDC(usage, body.model ?? AI_MODEL, { inputChars, outputChars });
-      const newBalance = Math.max(0, balance - cost);
-      const spent = (await this.ctx.storage.get<number>('totalSpentMicroUSDC')) ?? 0;
-      await this.ctx.storage.put('balance', newBalance);
-      await this.ctx.storage.put('totalSpentMicroUSDC', spent + cost);
+      this.sql.exec(
+        `UPDATE wallet_state SET
+         balance = MAX(0, balance - ?),
+         total_spent = total_spent + ?,
+         last_used_at = ?,
+         total_requests = total_requests + 1
+         WHERE id = 1`,
+        cost, cost, Date.now(),
+      );
 
       // Append user prompt + assistant reply to persistent history
       if (responseText) {
-        const current = (await this.ctx.storage.get<ConversationMessage[]>('history')) ?? [];
-        const updated = [
-          ...current,
-          { role: 'user' as const, content: body.prompt },
-          { role: 'assistant' as const, content: responseText, meta: { cost, model: body.model ?? AI_MODEL } },
-        ].slice(-MAX_HISTORY_MESSAGES);
-        await this.ctx.storage.put('history', updated);
+        const now = Date.now();
+        this.sql.exec(
+          'INSERT INTO history (role, content, cost, model, created_at) VALUES (?, ?, ?, ?, ?)',
+          'user', body.prompt, null, null, now,
+        );
+        this.sql.exec(
+          'INSERT INTO history (role, content, cost, model, created_at) VALUES (?, ?, ?, ?, ?)',
+          'assistant', responseText, cost, body.model ?? AI_MODEL, now + 1,
+        );
+        // Trim to MAX_HISTORY_MESSAGES
+        this.sql.exec(
+          `DELETE FROM history WHERE id NOT IN (
+            SELECT id FROM history ORDER BY id DESC LIMIT ?
+          )`,
+          MAX_HISTORY_MESSAGES,
+        );
       }
-
-      // Log usage
-      await this.ctx.storage.put('lastUsedAt', Date.now());
-      const requests = (await this.ctx.storage.get<number>('totalRequests')) ?? 0;
-      await this.ctx.storage.put('totalRequests', requests + 1);
     })();
 
     this.ctx.waitUntil(postStreamWork);
@@ -284,10 +447,10 @@ export class InferenceGate extends DurableObject<Env> {
     // Persist wallet only on first-ever request (subsequent activations load via constructor)
     if (!this.wallet) {
       this.wallet = wallet;
-      await this.ctx.storage.put('walletAddress', wallet);
+      this.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', wallet);
     }
 
-    const limited = await this.checkRateLimit();
+    const limited = this.checkRateLimit();
     if (limited) return limited;
 
     let proof: PaymentProof;
@@ -310,7 +473,7 @@ export class InferenceGate extends DurableObject<Env> {
     // Grace mode — provisional credit when RPC is unreachable
     let isProvisional = false;
     if (check.provisional) {
-      const canGrace = await this.canActivateGraceMode(check.amount ?? PAYMENT_MICRO_USDC);
+      const canGrace = this.canActivateGraceMode(check.amount ?? PAYMENT_MICRO_USDC);
       if (!canGrace) {
         return Response.json({
           error: 'RPC unavailable and provisional credit limit reached — please retry later',
@@ -323,30 +486,40 @@ export class InferenceGate extends DurableObject<Env> {
     const creditAmount = check.amount ?? PAYMENT_MICRO_USDC;
     let newBalance = 0;
     try {
-      await this.ctx.storage.transaction(async (txn) => {
-        const seenKey = `seen:${proof.txHash}`;
-        if (await txn.get(seenKey)) throw new Error('txHash already used');
-        await txn.put(seenKey, Date.now());
+      this.ctx.storage.transactionSync(() => {
+        const seen = this.sql.exec<{ tx_hash: string }>(
+          'SELECT tx_hash FROM seen_transactions WHERE tx_hash = ?', proof.txHash,
+        ).toArray();
+        if (seen.length > 0) throw new Error('txHash already used');
 
-        const current  = (await txn.get<number>('balance'))                  ?? 0;
-        const deposited = (await txn.get<number>('totalDepositedMicroUSDC')) ?? 0;
-        newBalance = current + creditAmount;
-        await txn.put('balance',                  newBalance);
-        await txn.put('totalDepositedMicroUSDC',  deposited + creditAmount);
+        this.sql.exec(
+          'INSERT INTO seen_transactions (tx_hash, created_at) VALUES (?, ?)',
+          proof.txHash, Date.now(),
+        );
+
+        this.sql.exec(
+          'UPDATE wallet_state SET balance = balance + ?, total_deposited = total_deposited + ? WHERE id = 1',
+          creditAmount, creditAmount,
+        );
+
+        const row = this.sql.exec<{ balance: number }>(
+          'SELECT balance FROM wallet_state WHERE id = 1',
+        ).toArray()[0]!;
+        newBalance = row.balance;
 
         // Grace mode: store pending entry for async re-verification
         if (isProvisional && check.pendingProof) {
-          const pendingKey = `pending:${proof.txHash}`;
-          await txn.put(pendingKey, {
-            proof: check.pendingProof,
-            creditedAmount: creditAmount,
-            createdAt: Date.now(),
-            retryCount: 0,
-            status: 'pending',
-          } satisfies PendingVerification);
+          this.sql.exec(
+            `INSERT INTO pending_verifications
+             (tx_hash, proof_json, credited_amount, created_at, retry_count, status)
+             VALUES (?, ?, ?, ?, 0, 'pending')`,
+            proof.txHash, JSON.stringify(check.pendingProof), creditAmount, Date.now(),
+          );
 
-          const provBal = (await txn.get<number>('provisionalBalance')) ?? 0;
-          await txn.put('provisionalBalance', provBal + creditAmount);
+          this.sql.exec(
+            'UPDATE wallet_state SET provisional_balance = provisional_balance + ? WHERE id = 1',
+            creditAmount,
+          );
         }
       });
     } catch (err: unknown) {
@@ -374,32 +547,44 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   async handleBalance(): Promise<Response> {
-    const limited = await this.checkRateLimit();
+    const limited = this.checkRateLimit();
     if (limited) return limited;
 
-    const [balance, totalDeposited, totalSpent, totalRequests, totalFailedRequests, provisionalBalance] = await Promise.all([
-      this.ctx.storage.get<number>('balance'),
-      this.ctx.storage.get<number>('totalDepositedMicroUSDC'),
-      this.ctx.storage.get<number>('totalSpentMicroUSDC'),
-      this.ctx.storage.get<number>('totalRequests'),
-      this.ctx.storage.get<number>('totalFailedRequests'),
-      this.ctx.storage.get<number>('provisionalBalance'),
-    ]);
+    const row = this.sql.exec<{
+      balance: number;
+      total_deposited: number;
+      total_spent: number;
+      total_requests: number;
+      total_failed_requests: number;
+      provisional_balance: number;
+    }>(`SELECT balance, total_deposited, total_spent, total_requests,
+        total_failed_requests, provisional_balance
+        FROM wallet_state WHERE id = 1`).toArray()[0]!;
+
     return Response.json({
-      balance:                  balance ?? 0,
-      totalDepositedMicroUSDC:  totalDeposited ?? 0,
-      totalSpentMicroUSDC:      totalSpent ?? 0,
-      totalRequests:            totalRequests ?? 0,
-      totalFailedRequests:      totalFailedRequests ?? 0,
-      provisionalMicroUSDC:     provisionalBalance ?? 0,
+      balance:                  row.balance,
+      totalDepositedMicroUSDC:  row.total_deposited,
+      totalSpentMicroUSDC:      row.total_spent,
+      totalRequests:            row.total_requests,
+      totalFailedRequests:      row.total_failed_requests,
+      provisionalMicroUSDC:     row.provisional_balance,
     }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
   async handleHistory(): Promise<Response> {
-    const limited = await this.checkRateLimit();
+    const limited = this.checkRateLimit();
     if (limited) return limited;
 
-    const history = (await this.ctx.storage.get<ConversationMessage[]>('history')) ?? [];
+    const rows = this.sql.exec<{
+      role: string; content: string; cost: number | null; model: string | null;
+    }>('SELECT role, content, cost, model FROM history ORDER BY id').toArray();
+
+    const history: ConversationMessage[] = rows.map(r => ({
+      role: r.role as 'user' | 'assistant',
+      content: r.content,
+      ...(r.cost != null ? { meta: { cost: r.cost, model: r.model! } } : {}),
+    }));
+
     return new Response(
       JSON.stringify({ history }),
       { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
@@ -407,10 +592,10 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   async handleClearHistory(): Promise<Response> {
-    const limited = await this.checkRateLimit();
+    const limited = this.checkRateLimit();
     if (limited) return limited;
 
-    await this.ctx.storage.delete('history');
+    this.sql.exec('DELETE FROM history');
     return new Response(
       JSON.stringify({ ok: true }),
       { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
@@ -420,16 +605,16 @@ export class InferenceGate extends DurableObject<Env> {
   // ── Grace mode: provisional credit helpers ─────────────────────────────────
 
   /** Check whether grace mode can be activated for the given amount */
-  private async canActivateGraceMode(amount: number): Promise<boolean> {
-    const provBal = (await this.ctx.storage.get<number>('provisionalBalance')) ?? 0;
-    if (provBal + amount > GRACE_MAX_PROVISIONAL_MICRO_USDC) return false;
+  private canActivateGraceMode(amount: number): boolean {
+    const row = this.sql.exec<{ provisional_balance: number }>(
+      'SELECT provisional_balance FROM wallet_state WHERE id = 1',
+    ).toArray()[0]!;
+    if (row.provisional_balance + amount > GRACE_MAX_PROVISIONAL_MICRO_USDC) return false;
 
-    const pendingEntries = await this.ctx.storage.list({ prefix: 'pending:' });
-    let pendingCount = 0;
-    for (const [, value] of pendingEntries) {
-      if ((value as PendingVerification).status === 'pending') pendingCount++;
-    }
-    if (pendingCount >= GRACE_MAX_PENDING) return false;
+    const countRow = this.sql.exec<{ cnt: number }>(
+      `SELECT COUNT(*) as cnt FROM pending_verifications WHERE status = 'pending'`,
+    ).toArray()[0]!;
+    if (countRow.cnt >= GRACE_MAX_PENDING) return false;
 
     return true;
   }
@@ -443,54 +628,54 @@ export class InferenceGate extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(target);
   }
 
-  /** Remove expired seen:{txHash} and terminal pending:{txHash} keys from storage.
-   *  Returns the number of unexpired seen: keys remaining. */
-  private async cleanupExpiredKeys(): Promise<number> {
+  /** Remove expired seen transactions and terminal pending entries from storage.
+   *  Returns the number of unexpired seen transactions remaining. */
+  private cleanupExpiredKeys(): number {
     const now = Date.now();
-    const toDelete: string[] = [];
 
-    // Clean up expired replay-prevention keys
-    const seenEntries = await this.ctx.storage.list({ prefix: 'seen:' });
-    let remainingSeenKeys = 0;
-    for (const [key, value] of seenEntries) {
-      if (now - (value as number) > SEEN_TX_RETENTION_MS) {
-        toDelete.push(key);
-      } else {
-        remainingSeenKeys++;
-      }
+    // Delete expired replay-prevention entries
+    this.sql.exec(
+      'DELETE FROM seen_transactions WHERE ? - created_at > ?',
+      now, SEEN_TX_RETENTION_MS,
+    );
+
+    // Delete terminal pending verification entries older than 24h
+    this.sql.exec(
+      `DELETE FROM pending_verifications WHERE status != 'pending' AND ? - created_at > ?`,
+      now, PENDING_TX_RETENTION_MS,
+    );
+
+    // Count remaining seen entries
+    const row = this.sql.exec<{ cnt: number }>(
+      'SELECT COUNT(*) as cnt FROM seen_transactions',
+    ).toArray()[0]!;
+
+    if (row.cnt === 0) {
+      // Also clean up old rate limit windows while we're at it
+      this.sql.exec('DELETE FROM rate_limits');
     }
 
-    // Clean up terminal pending verification entries (confirmed/reversed/expired) older than 24h
-    const pendingEntries = await this.ctx.storage.list({ prefix: 'pending:' });
-    for (const [key, value] of pendingEntries) {
-      const entry = value as PendingVerification;
-      if (entry.status !== 'pending' && now - entry.createdAt > PENDING_TX_RETENTION_MS) {
-        toDelete.push(key);
-      }
-    }
-
-    if (toDelete.length > 0) {
-      for (const key of toDelete) {
-        await this.ctx.storage.delete(key);
-      }
-      console.log('[dox402] Cleaned up %d expired keys for wallet %s', toDelete.length, this.walletAddress);
-    }
-
-    return remainingSeenKeys;
+    return row.cnt;
   }
 
   /** Clear provisional balance tracking for a resolved entry.
    *  If `reverseCredit` is true, also deducts the amount from the wallet balance. */
-  private async clearProvisionalCredit(amount: number, reverseCredit: boolean): Promise<void> {
-    const provBal = (await this.ctx.storage.get<number>('provisionalBalance')) ?? 0;
-    await this.ctx.storage.put('provisionalBalance', Math.max(0, provBal - amount));
+  private clearProvisionalCredit(amount: number, reverseCredit: boolean): void {
+    this.sql.exec(
+      'UPDATE wallet_state SET provisional_balance = MAX(0, provisional_balance - ?) WHERE id = 1',
+      amount,
+    );
 
     if (reverseCredit) {
-      const balance = (await this.ctx.storage.get<number>('balance')) ?? 0;
-      const newBalance = Math.max(0, balance - amount);
-      await this.ctx.storage.put('balance', newBalance);
+      this.sql.exec(
+        'UPDATE wallet_state SET balance = MAX(0, balance - ?) WHERE id = 1',
+        amount,
+      );
+      const row = this.sql.exec<{ balance: number }>(
+        'SELECT balance FROM wallet_state WHERE id = 1',
+      ).toArray()[0]!;
       console.warn('[dox402] Reversed %d µUSDC from wallet %s (new balance: %d)',
-        amount, this.walletAddress, newBalance);
+        amount, this.walletAddress, row.balance);
     }
   }
 
@@ -499,69 +684,84 @@ export class InferenceGate extends DurableObject<Env> {
     // Wallet is normally loaded by blockConcurrencyWhile() in constructor;
     // fallback for edge cases (e.g. test mocks where storage is populated after construction)
     if (!this.wallet) {
-      this.wallet = (await this.ctx.storage.get<string>('walletAddress')) ?? '';
+      const rows = this.sql.exec<{ wallet_address: string }>(
+        'SELECT wallet_address FROM wallet_state WHERE id = 1',
+      ).toArray();
+      this.wallet = rows[0]?.wallet_address ?? '';
     }
 
-    // Migration: remove legacy pendingTxHashes array (replaced by storage.list prefix scan)
-    await this.ctx.storage.delete('pendingTxHashes');
-
     // ── Grace mode re-verification ────────────────────────────────────────────
-    const pendingEntries = await this.ctx.storage.list({ prefix: 'pending:' });
+    const pendingRows = this.sql.exec<{
+      tx_hash: string;
+      proof_json: string;
+      credited_amount: number;
+      retry_count: number;
+    }>(`SELECT tx_hash, proof_json, credited_amount, retry_count
+        FROM pending_verifications WHERE status = 'pending'`).toArray();
+
     let anyStillPending = false;
     let nextRetryMs = Infinity;
 
-    for (const [key, value] of pendingEntries) {
-      const entry = value as PendingVerification;
-      if (entry.status !== 'pending') continue; // skip terminal entries (handled by cleanup)
-      const txHash = key.slice('pending:'.length);
+    for (const row of pendingRows) {
+      const proof = JSON.parse(row.proof_json) as PaymentProof;
 
       // Attempt re-verification via RPC
-      const result = await verifyProof(entry.proof, this.walletAddress, this.env);
+      const result = await verifyProof(proof, this.walletAddress, this.env);
 
-      entry.retryCount++;
-      entry.lastAttemptAt = Date.now();
+      const newRetryCount = row.retry_count + 1;
+      const now = Date.now();
 
       if (result.valid && !result.provisional) {
         // RPC confirmed the transaction — mark as verified
-        entry.status = 'confirmed';
-        await this.ctx.storage.put(key, entry);
-        await this.clearProvisionalCredit(entry.creditedAmount, false);
-        console.log('[dox402] Re-verification CONFIRMED tx %s, wallet %s', txHash, this.walletAddress);
+        this.sql.exec(
+          `UPDATE pending_verifications SET status = 'confirmed', retry_count = ?,
+           last_attempt_at = ? WHERE tx_hash = ?`,
+          newRetryCount, now, row.tx_hash,
+        );
+        this.clearProvisionalCredit(row.credited_amount, false);
+        console.log('[dox402] Re-verification CONFIRMED tx %s, wallet %s', row.tx_hash, this.walletAddress);
         continue;
       }
 
       if (result.provisional) {
         // RPC still unreachable — schedule another retry
-        if (entry.retryCount >= GRACE_MAX_RETRIES) {
-          entry.status = 'expired';
-          entry.lastError = result.reason;
-          await this.ctx.storage.put(key, entry);
-          await this.clearProvisionalCredit(entry.creditedAmount, false);
+        if (newRetryCount >= GRACE_MAX_RETRIES) {
+          this.sql.exec(
+            `UPDATE pending_verifications SET status = 'expired', retry_count = ?,
+             last_attempt_at = ?, last_error = ? WHERE tx_hash = ?`,
+            newRetryCount, now, result.reason ?? null, row.tx_hash,
+          );
+          this.clearProvisionalCredit(row.credited_amount, false);
           console.error('[dox402] Re-verification EXPIRED after %d attempts for tx %s, wallet %s — keeping credit',
-            entry.retryCount, txHash, this.walletAddress);
+            newRetryCount, row.tx_hash, this.walletAddress);
           continue;
         }
-        entry.lastError = result.reason;
-        await this.ctx.storage.put(key, entry);
+        this.sql.exec(
+          `UPDATE pending_verifications SET retry_count = ?,
+           last_attempt_at = ?, last_error = ? WHERE tx_hash = ?`,
+          newRetryCount, now, result.reason ?? null, row.tx_hash,
+        );
         anyStillPending = true;
         // Exponential backoff: 30s * 2^(retryCount-1)
-        const delay = GRACE_INITIAL_RETRY_MS * Math.pow(2, entry.retryCount - 1);
+        const delay = GRACE_INITIAL_RETRY_MS * Math.pow(2, newRetryCount - 1);
         nextRetryMs = Math.min(nextRetryMs, delay);
         continue;
       }
 
       // RPC succeeded but verification FAILED (reverted, wrong sender, no transfer, etc.)
       // This is fraud or a mistake — reverse the provisional credit
-      entry.status = 'reversed';
-      entry.lastError = result.reason;
-      await this.ctx.storage.put(key, entry);
-      await this.clearProvisionalCredit(entry.creditedAmount, true);
+      this.sql.exec(
+        `UPDATE pending_verifications SET status = 'reversed', retry_count = ?,
+         last_attempt_at = ?, last_error = ? WHERE tx_hash = ?`,
+        newRetryCount, now, result.reason ?? null, row.tx_hash,
+      );
+      this.clearProvisionalCredit(row.credited_amount, true);
       console.error('[dox402] Re-verification REVERSED tx %s, wallet %s — reason: %s',
-        txHash, this.walletAddress, result.reason);
+        row.tx_hash, this.walletAddress, result.reason);
     }
 
-    // ── Storage cleanup — remove expired seen: and terminal pending: keys ─────
-    const remainingSeenKeys = await this.cleanupExpiredKeys();
+    // ── Storage cleanup — remove expired seen and terminal pending entries ─────
+    const remainingSeenKeys = this.cleanupExpiredKeys();
 
     // ── Schedule next alarm ───────────────────────────────────────────────────
     if (anyStillPending && nextRetryMs < Infinity) {
@@ -574,14 +774,12 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   // ── SIWE nonce management ──────────────────────────────────────────────────
-  // Stores an array of up to MAX_NONCES valid nonces per wallet to support
-  // concurrent login flows and prevent nonce-overwrite DoS attacks.
 
   private static readonly NONCE_EXPIRY_MS = 300_000; // 5 minutes
   private static readonly MAX_NONCES = 5;
 
   async handleNonce(): Promise<Response> {
-    const limited = await this.checkRateLimit();
+    const limited = this.checkRateLimit();
     if (limited) return limited;
 
     const bytes = new Uint8Array(16);
@@ -589,41 +787,53 @@ export class InferenceGate extends DurableObject<Env> {
     const nonce = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
     const now = Date.now();
 
-    const existing = (await this.ctx.storage.get<StoredNonce[]>('siwe:nonces')) ?? [];
     // Prune expired nonces
-    const valid = existing.filter(n => now - n.createdAt <= InferenceGate.NONCE_EXPIRY_MS);
-    // Cap at MAX_NONCES - 1 to make room for the new one (drop oldest first)
-    const trimmed = valid.length >= InferenceGate.MAX_NONCES
-      ? valid.slice(-(InferenceGate.MAX_NONCES - 1))
-      : valid;
-    trimmed.push({ nonce, createdAt: now });
-    await this.ctx.storage.put('siwe:nonces', trimmed);
+    this.sql.exec(
+      'DELETE FROM nonces WHERE ? - created_at > ?',
+      now, InferenceGate.NONCE_EXPIRY_MS,
+    );
+
+    // Insert new nonce
+    this.sql.exec(
+      'INSERT INTO nonces (nonce, created_at) VALUES (?, ?)',
+      nonce, now,
+    );
+
+    // Cap at MAX_NONCES (delete oldest beyond limit)
+    this.sql.exec(
+      `DELETE FROM nonces WHERE rowid NOT IN (
+        SELECT rowid FROM nonces ORDER BY created_at DESC LIMIT ?
+      )`,
+      InferenceGate.MAX_NONCES,
+    );
 
     return Response.json({ nonce }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
   async handleVerifyNonce(nonce: string): Promise<Response> {
-    const limited = await this.checkRateLimit();
+    const limited = this.checkRateLimit();
     if (limited) return limited;
 
     if (!nonce) {
       return Response.json({ error: 'Missing nonce' }, { status: 400 });
     }
 
-    const nonces = (await this.ctx.storage.get<StoredNonce[]>('siwe:nonces')) ?? [];
-    const idx = nonces.findIndex(n => n.nonce === nonce);
-    if (idx === -1) {
+    const row = this.sql.exec<{ created_at: number }>(
+      'SELECT created_at FROM nonces WHERE nonce = ?', nonce,
+    ).toArray()[0];
+
+    if (!row) {
       return Response.json({ error: 'Invalid or expired nonce' }, { status: 401 });
     }
+
     // Check 5-minute expiry
-    if (Date.now() - nonces[idx].createdAt > InferenceGate.NONCE_EXPIRY_MS) {
-      nonces.splice(idx, 1);
-      await this.ctx.storage.put('siwe:nonces', nonces);
+    if (Date.now() - row.created_at > InferenceGate.NONCE_EXPIRY_MS) {
+      this.sql.exec('DELETE FROM nonces WHERE nonce = ?', nonce);
       return Response.json({ error: 'Nonce expired' }, { status: 401 });
     }
-    // One-time use — remove from array after verification
-    nonces.splice(idx, 1);
-    await this.ctx.storage.put('siwe:nonces', nonces);
+
+    // One-time use — remove after verification
+    this.sql.exec('DELETE FROM nonces WHERE nonce = ?', nonce);
     return Response.json({ valid: true });
   }
 }

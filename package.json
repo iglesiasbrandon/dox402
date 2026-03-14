@@ -20,6 +20,8 @@
   "type": "module",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260307.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.8.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18",
