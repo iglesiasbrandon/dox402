@@ -54,6 +54,15 @@ function makeMockStorage() {
       };
       await cb(txn);
     }),
+    list: vi.fn(async (opts?: { prefix?: string }) => {
+      const result = new Map<string, unknown>();
+      for (const [key, value] of data.entries()) {
+        if (!opts?.prefix || key.startsWith(opts.prefix)) {
+          result.set(key, value);
+        }
+      }
+      return result;
+    }),
     getAlarm: vi.fn(async () => alarm),
     setAlarm: vi.fn(async (time: number | Date) => { alarm = typeof time === 'number' ? time : time.getTime(); }),
     deleteAlarm: vi.fn(async () => { alarm = null; }),
@@ -407,5 +416,131 @@ describe('InferenceGate — alarm re-verification', () => {
     const body = await res.json() as { provisionalMicroUSDC: number };
 
     expect(body.provisionalMicroUSDC).toBe(1000);
+  });
+});
+
+// ── Storage cleanup — seen:{txHash} and terminal pending entries ─────────────
+
+describe('InferenceGate — storage cleanup', () => {
+  let verifyProofSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    verifyProofSpy = vi.spyOn(x402Module, 'verifyProof');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const ONE_HOUR_MS = 3_600_000;
+  const TWENTY_FOUR_HOURS_MS = 86_400_000;
+
+  it('deletes seen keys older than retention period', async () => {
+    const { gate, storage } = makeTestDO();
+    storage._data.set('walletAddress', '0xtest');
+
+    // Old seen key (2 hours ago) — should be cleaned up
+    storage._data.set('seen:0x' + 'a'.repeat(64), Date.now() - 2 * ONE_HOUR_MS);
+    // Recent seen key (5 minutes ago) — should be kept
+    storage._data.set('seen:0x' + 'b'.repeat(64), Date.now() - 5 * 60 * 1000);
+
+    await gate.alarm();
+
+    expect(storage._data.has('seen:0x' + 'a'.repeat(64))).toBe(false);
+    expect(storage._data.has('seen:0x' + 'b'.repeat(64))).toBe(true);
+  });
+
+  it('deletes terminal pending entries older than 24 hours', async () => {
+    const { gate, storage } = makeTestDO();
+    storage._data.set('walletAddress', '0xtest');
+
+    // Old confirmed entry (48h ago) — should be cleaned up
+    const oldEntry: PendingVerification = {
+      proof: { txHash: '0x' + 'c'.repeat(64), from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig' },
+      creditedAmount: 1000,
+      createdAt: Date.now() - 2 * TWENTY_FOUR_HOURS_MS,
+      retryCount: 1,
+      status: 'confirmed',
+    };
+    storage._data.set('pending:0x' + 'c'.repeat(64), oldEntry);
+
+    await gate.alarm();
+
+    expect(storage._data.has('pending:0x' + 'c'.repeat(64))).toBe(false);
+  });
+
+  it('keeps active pending entries regardless of age', async () => {
+    const { gate, storage } = makeTestDO();
+    storage._data.set('walletAddress', '0xtest');
+
+    // Old but still-pending entry — cleanup must NOT delete it (only grace mode processes it)
+    const activeEntry: PendingVerification = {
+      proof: { txHash: '0x' + 'd'.repeat(64), from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig' },
+      creditedAmount: 1000,
+      createdAt: Date.now() - 2 * TWENTY_FOUR_HOURS_MS,
+      retryCount: 3,
+      status: 'pending',
+    };
+    storage._data.set('pending:0x' + 'd'.repeat(64), activeEntry);
+    // Do NOT add to pendingTxHashes — this isolates cleanup behavior from grace mode processing
+
+    await gate.alarm();
+
+    // Cleanup should skip entries with status='pending', even if they're very old
+    expect(storage._data.has('pending:0x' + 'd'.repeat(64))).toBe(true);
+    const kept = storage._data.get('pending:0x' + 'd'.repeat(64)) as PendingVerification;
+    expect(kept.status).toBe('pending');
+  });
+
+  it('reschedules alarm for remaining seen keys when no grace entries', async () => {
+    const { gate, storage } = makeTestDO();
+    storage._data.set('walletAddress', '0xtest');
+
+    // Recent seen key — not yet expired, should trigger cleanup alarm reschedule
+    storage._data.set('seen:0x' + 'e'.repeat(64), Date.now() - 5 * 60 * 1000);
+
+    await gate.alarm();
+
+    // setAlarm should be called to schedule future cleanup
+    expect(storage.setAlarm).toHaveBeenCalled();
+    const alarmTime = storage._getAlarm();
+    expect(alarmTime).not.toBeNull();
+    // Alarm should be in the future (~1 hour from now)
+    expect(alarmTime!).toBeGreaterThan(Date.now());
+  });
+
+  it('does not reschedule alarm when all seen keys are cleaned up', async () => {
+    const { gate, storage } = makeTestDO();
+    storage._data.set('walletAddress', '0xtest');
+
+    // Only old seen key — will be cleaned up, no remaining keys
+    storage._data.set('seen:0x' + 'f'.repeat(64), Date.now() - 2 * ONE_HOUR_MS);
+
+    storage.setAlarm.mockClear();
+    await gate.alarm();
+
+    // Old key should be deleted
+    expect(storage._data.has('seen:0x' + 'f'.repeat(64))).toBe(false);
+    // No alarm should be rescheduled (no remaining keys)
+    expect(storage.setAlarm).not.toHaveBeenCalled();
+  });
+
+  it('keeps reversed/expired pending entries younger than 24h for audit', async () => {
+    const { gate, storage } = makeTestDO();
+    storage._data.set('walletAddress', '0xtest');
+
+    // Recent reversed entry (1h ago) — should be kept for audit
+    const recentReversed: PendingVerification = {
+      proof: { txHash: '0x' + 'a'.repeat(64), from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig' },
+      creditedAmount: 1000,
+      createdAt: Date.now() - ONE_HOUR_MS,
+      retryCount: 1,
+      status: 'reversed',
+    };
+    storage._data.set('pending:0x' + 'a'.repeat(64), recentReversed);
+
+    await gate.alarm();
+
+    expect(storage._data.has('pending:0x' + 'a'.repeat(64))).toBe(true);
   });
 });

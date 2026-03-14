@@ -4,6 +4,7 @@ import { runInference } from './ai';
 import {
   AI_MODEL, MAX_HISTORY_MESSAGES, PAYMENT_MICRO_USDC, RATE_LIMIT_PER_MINUTE,
   GRACE_MAX_PROVISIONAL_MICRO_USDC, GRACE_MAX_PENDING, GRACE_INITIAL_RETRY_MS, GRACE_MAX_RETRIES,
+  SEEN_TX_RETENTION_MS, PENDING_TX_RETENTION_MS,
 } from './constants';
 import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billing';
 import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce } from './types';
@@ -162,11 +163,14 @@ export class InferenceGate extends DurableObject<Env> {
       throw err;
     }
 
-    // Schedule alarm for async re-verification if provisional
+    // Ensure cleanup alarm fires after seen key retention period
+    await this.ensureAlarm(SEEN_TX_RETENTION_MS);
+
+    // Schedule alarm for async re-verification if provisional (shorter delay overrides cleanup alarm)
     if (isProvisional) {
       console.warn('[dox402] Grace mode activated for tx %s, wallet %s, amount %d µUSDC',
         proof.txHash, this.walletAddress, creditAmount);
-      await this.scheduleVerificationAlarm();
+      await this.ensureAlarm(GRACE_INITIAL_RETRY_MS);
     }
 
     // Step 9: Run inference (balance deducted async after stream)
@@ -362,11 +366,14 @@ export class InferenceGate extends DurableObject<Env> {
       throw err;
     }
 
-    // Schedule alarm for async re-verification if provisional
+    // Ensure cleanup alarm fires after seen key retention period
+    await this.ensureAlarm(SEEN_TX_RETENTION_MS);
+
+    // Schedule alarm for async re-verification if provisional (shorter delay overrides cleanup alarm)
     if (isProvisional) {
       console.warn('[dox402] Grace mode activated for tx %s, wallet %s, amount %d µUSDC',
         proof.txHash, this.walletAddress, creditAmount);
-      await this.scheduleVerificationAlarm();
+      await this.ensureAlarm(GRACE_INITIAL_RETRY_MS);
     }
 
     return Response.json(
@@ -432,12 +439,13 @@ export class InferenceGate extends DurableObject<Env> {
     return true;
   }
 
-  /** Schedule a DO alarm for the next pending re-verification.
-   *  Only one alarm can be active per DO — it will process all pending entries. */
-  private async scheduleVerificationAlarm(): Promise<void> {
+  /** Schedule a DO alarm at `Date.now() + delayMs`, but only if no earlier alarm exists.
+   *  Coordinates grace mode retries (short delay) with cleanup alarms (long delay). */
+  private async ensureAlarm(delayMs: number): Promise<void> {
+    const target = Date.now() + delayMs;
     const existing = await this.ctx.storage.getAlarm();
-    if (existing) return; // alarm already scheduled
-    await this.ctx.storage.setAlarm(Date.now() + GRACE_INITIAL_RETRY_MS);
+    if (existing !== null && existing <= target) return; // earlier alarm already scheduled
+    await this.ctx.storage.setAlarm(target);
   }
 
   /** Remove a pending entry from the tracking list */
@@ -445,6 +453,42 @@ export class InferenceGate extends DurableObject<Env> {
     const hashes = (await this.ctx.storage.get<string[]>('pendingTxHashes')) ?? [];
     const filtered = hashes.filter(h => h !== txHash);
     await this.ctx.storage.put('pendingTxHashes', filtered);
+  }
+
+  /** Remove expired seen:{txHash} and terminal pending:{txHash} keys from storage.
+   *  Returns the number of unexpired seen: keys remaining. */
+  private async cleanupExpiredKeys(): Promise<number> {
+    const now = Date.now();
+    const toDelete: string[] = [];
+
+    // Clean up expired replay-prevention keys
+    const seenEntries = await this.ctx.storage.list({ prefix: 'seen:' });
+    let remainingSeenKeys = 0;
+    for (const [key, value] of seenEntries) {
+      if (now - (value as number) > SEEN_TX_RETENTION_MS) {
+        toDelete.push(key);
+      } else {
+        remainingSeenKeys++;
+      }
+    }
+
+    // Clean up terminal pending verification entries (confirmed/reversed/expired) older than 24h
+    const pendingEntries = await this.ctx.storage.list({ prefix: 'pending:' });
+    for (const [key, value] of pendingEntries) {
+      const entry = value as PendingVerification;
+      if (entry.status !== 'pending' && now - entry.createdAt > PENDING_TX_RETENTION_MS) {
+        toDelete.push(key);
+      }
+    }
+
+    if (toDelete.length > 0) {
+      for (const key of toDelete) {
+        await this.ctx.storage.delete(key);
+      }
+      console.log('[dox402] Cleaned up %d expired keys for wallet %s', toDelete.length, this.walletAddress);
+    }
+
+    return remainingSeenKeys;
   }
 
   /** Clear provisional balance tracking for a resolved entry.
@@ -464,7 +508,7 @@ export class InferenceGate extends DurableObject<Env> {
     }
   }
 
-  /** DO alarm handler — async re-verification of provisionally credited payments */
+  /** DO alarm handler — re-verification of provisionally credited payments + storage cleanup */
   async alarm(): Promise<void> {
     // Wallet is normally loaded by blockConcurrencyWhile() in constructor;
     // fallback for edge cases (e.g. test mocks where storage is populated after construction)
@@ -472,9 +516,8 @@ export class InferenceGate extends DurableObject<Env> {
       this.wallet = (await this.ctx.storage.get<string>('walletAddress')) ?? '';
     }
 
+    // ── Grace mode re-verification ────────────────────────────────────────────
     const hashes = (await this.ctx.storage.get<string[]>('pendingTxHashes')) ?? [];
-    if (hashes.length === 0) return;
-
     let anyStillPending = false;
     let nextRetryMs = Infinity;
 
@@ -531,9 +574,16 @@ export class InferenceGate extends DurableObject<Env> {
         txHash, this.walletAddress, result.reason);
     }
 
-    // Schedule next alarm if any entries are still pending
+    // ── Storage cleanup — remove expired seen: and terminal pending: keys ─────
+    const remainingSeenKeys = await this.cleanupExpiredKeys();
+
+    // ── Schedule next alarm ───────────────────────────────────────────────────
     if (anyStillPending && nextRetryMs < Infinity) {
+      // Grace mode retry needed — short delay takes priority
       await this.ctx.storage.setAlarm(Date.now() + nextRetryMs);
+    } else if (remainingSeenKeys > 0) {
+      // No grace retries, but unexpired seen keys remain — schedule cleanup
+      await this.ensureAlarm(SEEN_TX_RETENTION_MS);
     }
   }
 
