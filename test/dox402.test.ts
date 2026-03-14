@@ -346,6 +346,158 @@ describe('InferenceGate — credit refund on AI failure', () => {
   });
 });
 
+// ── Streaming heartbeat and duration guard ───────────────────────────────────
+
+describe('InferenceGate — streaming heartbeat and duration guard', () => {
+
+  /** Create a stream where we control when data arrives */
+  function controllableStream() {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) { controller = c; },
+    });
+    const enc = new TextEncoder();
+    return {
+      stream,
+      push: (chunk: string) => controller.enqueue(enc.encode(chunk)),
+      end: () => controller.close(),
+    };
+  }
+
+  it('sends :keepalive comment when AI stream is idle', async () => {
+    vi.useFakeTimers();
+    try {
+      const ctrl = controllableStream();
+      const { gate, storage } = makeTestDO({ aiStream: ctrl.stream });
+      setBalance(storage, 1000);
+
+      const response = await callInfer(gate);
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+
+      // No data from AI yet — advance past heartbeat interval (15s)
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      // Read the heartbeat comment
+      const { value, done } = await reader.read();
+      expect(done).toBe(false);
+      expect(new TextDecoder().decode(value)).toBe(':keepalive\n\n');
+
+      // Now send actual data and close the AI stream
+      ctrl.push('data: {"response":"Hi"}\n\ndata: {"usage":{"prompt_tokens":5,"completion_tokens":1}}\n\ndata: [DONE]\n\n');
+      ctrl.end();
+
+      // Drain remaining output
+      while (!(await reader.read()).done) {}
+      reader.releaseLock();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends multiple heartbeats over an extended idle period', async () => {
+    vi.useFakeTimers();
+    try {
+      const ctrl = controllableStream();
+      const { gate, storage } = makeTestDO({ aiStream: ctrl.stream });
+      setBalance(storage, 1000);
+
+      const response = await callInfer(gate);
+      const reader = response.body!.getReader();
+
+      // Advance through two heartbeat intervals
+      await vi.advanceTimersByTimeAsync(16_000);
+      const read1 = await reader.read();
+      expect(new TextDecoder().decode(read1.value)).toBe(':keepalive\n\n');
+
+      await vi.advanceTimersByTimeAsync(16_000);
+      const read2 = await reader.read();
+      expect(new TextDecoder().decode(read2.value)).toBe(':keepalive\n\n');
+
+      // Clean up
+      ctrl.push('data: {"response":"OK"}\n\ndata: [DONE]\n\n');
+      ctrl.end();
+      while (!(await reader.read()).done) {}
+      reader.releaseLock();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes stream gracefully when max duration exceeded', async () => {
+    vi.useFakeTimers();
+    try {
+      const ctrl = controllableStream();
+      const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: ctrl.stream });
+      setBalance(storage, 1000);
+
+      const response = await callInfer(gate);
+      const reader = response.body!.getReader();
+
+      // Advance through 9 heartbeat intervals (9 × 16s = 144s > 120s max duration)
+      for (let i = 0; i < 9; i++) {
+        await vi.advanceTimersByTimeAsync(16_000);
+      }
+
+      // Drain all output — should contain heartbeats and a graceful [DONE]
+      let output = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        output += new TextDecoder().decode(value);
+      }
+
+      expect(output).toContain(':keepalive\n\n');
+      expect(output).toContain('data: [DONE]\n\n');
+
+      reader.releaseLock();
+      await Promise.allSettled(waitUntilPromises);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does NOT bill when stream is closed by max duration guard', async () => {
+    vi.useFakeTimers();
+    try {
+      const ctrl = controllableStream();
+      const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: ctrl.stream });
+      setBalance(storage, 1000);
+
+      const response = await callInfer(gate);
+
+      // Exceed max duration without any data from AI
+      for (let i = 0; i < 9; i++) {
+        await vi.advanceTimersByTimeAsync(16_000);
+      }
+
+      // Drain the output to unblock writer (prevents backpressure deadlock)
+      await drainStream(response);
+      await Promise.allSettled(waitUntilPromises);
+
+      // Balance should be unchanged — no successful inference to bill
+      const state = getWalletState(storage);
+      expect(state.balance).toBe(1000);
+      expect(state.total_spent).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not send heartbeat when data flows continuously', async () => {
+    // Default mock stream delivers chunks instantly — no idle period
+    const { gate, storage, waitUntilPromises } = makeTestDO();
+    setBalance(storage, 1000);
+
+    const response = await callInfer(gate);
+    const output = await drainStream(response);
+    await Promise.allSettled(waitUntilPromises);
+
+    expect(output).not.toContain(':keepalive');
+    expect(output).toContain('data:');
+  });
+});
+
 // ── Grace mode — alarm re-verification ──────────────────────────────────────
 
 describe('InferenceGate — alarm re-verification', () => {

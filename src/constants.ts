@@ -17,6 +17,10 @@ export const GRACE_MAX_PENDING = 5;                      // max pending re-verif
 export const GRACE_INITIAL_RETRY_MS = 30_000;           // 30s first alarm
 export const GRACE_MAX_RETRIES = 6;                      // max alarm retries before giving up (~15 min span)
 
+// Streaming guards — heartbeat keepalive and duration limits
+export const STREAM_HEARTBEAT_MS   = 15_000;     // send :keepalive every 15s of inactivity
+export const STREAM_MAX_DURATION_MS = 120_000;   // hard cap: 2 minutes per inference stream
+
 // Storage cleanup — TTL for replay-prevention and resolved pending entries
 export const SEEN_TX_RETENTION_MS = 3_600_000;            // 1 hour — well beyond 5-min proof validity window
 export const PENDING_TX_RETENTION_MS = 86_400_000;        // 24 hours — keep terminal pending entries for audit

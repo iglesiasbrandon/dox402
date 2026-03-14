@@ -5,6 +5,7 @@ import {
   AI_MODEL, MAX_HISTORY_MESSAGES, PAYMENT_MICRO_USDC, RATE_LIMIT_PER_MINUTE,
   GRACE_MAX_PROVISIONAL_MICRO_USDC, GRACE_MAX_PENDING, GRACE_INITIAL_RETRY_MS, GRACE_MAX_RETRIES,
   SEEN_TX_RETENTION_MS, PENDING_TX_RETENTION_MS,
+  STREAM_HEARTBEAT_MS, STREAM_MAX_DURATION_MS,
 } from './constants';
 import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billing';
 import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce } from './types';
@@ -344,19 +345,65 @@ export class InferenceGate extends DurableObject<Env> {
       }
     }
 
-    // Tee the stream: pipe chunks to the client while accumulating SSE for billing + history
+    // Tee the stream: pipe chunks to the client while accumulating SSE for billing + history.
+    // Uses Promise.race for heartbeat keepalive (prevents proxy idle timeouts) and a
+    // max-duration guard (prevents runaway streams).
     const { readable: outStream, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const postStreamWork = (async () => {
       const writer = writable.getWriter();
       const reader = stream.getReader();
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
+      const heartbeatBytes = encoder.encode(':keepalive\n\n');
+      const startTime = Date.now();
       let accumulated = '';
       let streamErrored = false;
+      let pendingRead: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+
       try {
         while (true) {
-          const { done, value } = await reader.read();
-          if (done) { await writer.close(); break; }
-          accumulated += new TextDecoder().decode(value);
-          await writer.write(value);
+          // Max duration guard — close gracefully if stream runs too long
+          if (Date.now() - startTime > STREAM_MAX_DURATION_MS) {
+            console.warn('[InferenceGate] Stream max duration (%dms) exceeded, closing', STREAM_MAX_DURATION_MS);
+            try { await writer.write(encoder.encode('data: [DONE]\n\n')); } catch { /* client may be gone */ }
+            await writer.close();
+            break;
+          }
+
+          // Issue the read if we don't already have one pending (survives heartbeat iterations)
+          if (!pendingRead) {
+            pendingRead = reader.read();
+          }
+
+          // Race: next data chunk vs. heartbeat timer.
+          // The heartbeat fires only when the AI is slow to produce chunks, keeping the
+          // HTTP connection alive through Cloudflare's idle-timeout window.
+          const result = await Promise.race([
+            pendingRead.then(r => ({ kind: 'data' as const, done: r.done, value: r.value })),
+            new Promise<{ kind: 'heartbeat'; done: false; value: undefined }>(resolve =>
+              setTimeout(() => resolve({ kind: 'heartbeat', done: false, value: undefined }), STREAM_HEARTBEAT_MS),
+            ),
+          ]);
+
+          if (result.kind === 'heartbeat') {
+            // SSE comment — invisible to EventSource clients, keeps connection alive
+            await writer.write(heartbeatBytes);
+            continue; // pendingRead still outstanding — re-race
+          }
+
+          // Data chunk received — reset pending read handle
+          pendingRead = null;
+
+          if (result.done) {
+            await writer.close();
+            break;
+          }
+
+          // Accumulate for billing with { stream: true } to handle split multi-byte chars
+          accumulated += decoder.decode(result.value, { stream: true });
+          // Backpressure: writer.write() awaits until the client consumes enough of the
+          // writable buffer, naturally throttling the reader when the client is slow.
+          await writer.write(result.value!);
         }
       } catch (e) {
         streamErrored = true;
@@ -367,7 +414,7 @@ export class InferenceGate extends DurableObject<Env> {
             error: 'stream_error',
             detail: (e instanceof Error ? e.message : String(e)).slice(0, 200),
           });
-          await writer.write(new TextEncoder().encode(`data: ${errPayload}\n\ndata: [DONE]\n\n`));
+          await writer.write(encoder.encode(`data: ${errPayload}\n\ndata: [DONE]\n\n`));
           await writer.close();
         } catch {
           try { await writer.abort(e as Error); } catch { /* ignore */ }
