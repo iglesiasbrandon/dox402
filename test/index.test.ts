@@ -515,6 +515,28 @@ describe('Cookie-based authentication', () => {
   });
 });
 
+// ── DO Location Hint ─────────────────────────────────────────────────────────
+
+describe('DO location hint', () => {
+  it('passes locationHint: enam when creating DO stubs', async () => {
+    const wallet = generateWallet();
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+
+    const { token } = await createSessionToken(wallet.address, SESSION_SECRET);
+    const req = new Request('https://dox402.example.com/balance', {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    await worker.fetch(req, env);
+    expect(doNS.get).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ locationHint: 'enam' }),
+    );
+  });
+});
+
 // ── Auth Login Cookie ───────────────────────────────────────────────────────
 
 describe('/auth/login cookie', () => {

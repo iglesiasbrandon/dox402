@@ -57,11 +57,15 @@ function unauthorized(reason = 'Missing or invalid session token'): Response {
   return Response.json({ error: reason }, { status: 401 });
 }
 
-/** Get a typed DO stub for direct RPC calls (no HTTP fetch routing) */
+/** Get a typed DO stub for direct RPC calls (no HTTP fetch routing).
+ *  locationHint: 'enam' co-locates new DOs near AWS us-east-1 where Base chain
+ *  RPC providers (mainnet.base.org) are hosted, minimizing payment verification
+ *  latency. Workers AI routing is location-independent so inference is unaffected.
+ *  Note: hint only applies on first instantiation — existing DOs keep their location. */
 function getTypedStub(env: Env, walletAddress: string) {
   const doName = walletAddress.slice(2).toLowerCase(); // strip 0x, lowercase
   const id = env.DOX402.idFromName(doName);
-  return (env.DOX402 as DurableObjectNamespace<InferenceGate>).get(id);
+  return (env.DOX402 as DurableObjectNamespace<InferenceGate>).get(id, { locationHint: 'enam' });
 }
 
 function isSecureOrigin(url: URL): boolean {
