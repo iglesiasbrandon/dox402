@@ -82,6 +82,7 @@ function makeTestDO(opts?: { aiStream?: ReadableStream }) {
     storage,
     waitUntil: vi.fn((p: Promise<unknown>) => { waitUntilPromises.push(p); }),
     id: { name: 'test-wallet' },
+    blockConcurrencyWhile: vi.fn(async (cb: () => Promise<void>) => { await cb(); }),
   };
 
   const env: Env = {

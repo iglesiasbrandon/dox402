@@ -9,8 +9,15 @@ import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billi
 import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce } from './types';
 
 export class InferenceGate extends DurableObject<Env> {
-  /** Wallet address — set by RPC callers or restored from storage for alarms */
+  /** Wallet address — loaded once per activation via blockConcurrencyWhile() */
   private wallet = '';
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      this.wallet = (await ctx.storage.get<string>('walletAddress')) ?? '';
+    });
+  }
 
   /** Wallet address for the current context */
   private get walletAddress(): string {
@@ -46,9 +53,11 @@ export class InferenceGate extends DurableObject<Env> {
     hostname: string,
     wallet: string,
   ): Promise<Response> {
-    // Set wallet identity for this request and persist for alarm context
-    this.wallet = wallet;
-    await this.ctx.storage.put('walletAddress', wallet);
+    // Persist wallet only on first-ever request (subsequent activations load via constructor)
+    if (!this.wallet) {
+      this.wallet = wallet;
+      await this.ctx.storage.put('walletAddress', wallet);
+    }
 
     const limited = await this.checkRateLimit();
     if (limited) return limited;
@@ -273,9 +282,11 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   async handleDeposit(body: DepositRequest, hostname: string, wallet: string): Promise<Response> {
-    // Set wallet identity for this request and persist for alarm context
-    this.wallet = wallet;
-    await this.ctx.storage.put('walletAddress', wallet);
+    // Persist wallet only on first-ever request (subsequent activations load via constructor)
+    if (!this.wallet) {
+      this.wallet = wallet;
+      await this.ctx.storage.put('walletAddress', wallet);
+    }
 
     const limited = await this.checkRateLimit();
     if (limited) return limited;
@@ -455,8 +466,11 @@ export class InferenceGate extends DurableObject<Env> {
 
   /** DO alarm handler — async re-verification of provisionally credited payments */
   async alarm(): Promise<void> {
-    // Restore wallet address (alarm() has no incoming HTTP request)
-    this.wallet = (await this.ctx.storage.get<string>('walletAddress')) ?? '';
+    // Wallet is normally loaded by blockConcurrencyWhile() in constructor;
+    // fallback for edge cases (e.g. test mocks where storage is populated after construction)
+    if (!this.wallet) {
+      this.wallet = (await this.ctx.storage.get<string>('walletAddress')) ?? '';
+    }
 
     const hashes = (await this.ctx.storage.get<string[]>('pendingTxHashes')) ?? [];
     if (hashes.length === 0) return;
