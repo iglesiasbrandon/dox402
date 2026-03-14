@@ -2,7 +2,7 @@ import { InferenceGate } from './dox402';
 import { Env, InferRequest, DepositRequest } from './types';
 import { USDC_CONTRACT } from './constants';
 import { verifySiweLogin } from './siwe';
-import { createSessionToken, verifySessionToken } from './session';
+import { createSessionToken, verifySessionToken, TOKEN_EXPIRY_SECS, buildSessionCookie, buildClearCookie, parseCookieToken } from './session';
 import { parseSiwxHeader, verifySiwxPayload, buildSiwxExtension } from './siwx';
 
 // Re-export the DO class so Cloudflare can find it
@@ -17,7 +17,7 @@ function corsHeaders(origin: string): Record<string, string> {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, PAYMENT-SIGNATURE, SIGN-IN-WITH-X',
-    'Access-Control-Expose-Headers': 'PAYMENT-REQUIRED',
+    'Access-Control-Expose-Headers': 'PAYMENT-REQUIRED, X-Session-Expires',
     'Access-Control-Max-Age': '86400',
   };
 }
@@ -63,8 +63,19 @@ function getTypedStub(env: Env, walletAddress: string) {
   return (env.DOX402 as DurableObjectNamespace<InferenceGate>).get(id);
 }
 
-// Extract verified wallet from Authorization: Bearer <token>
+function isSecureOrigin(url: URL): boolean {
+  return url.protocol === 'https:';
+}
+
+// Extract verified wallet from Cookie (browser) or Authorization: Bearer (API)
 async function extractAuthWallet(request: Request, env: Env): Promise<string | null> {
+  // 1. Try HttpOnly cookie (browser clients)
+  const cookieToken = parseCookieToken(request.headers.get('Cookie'));
+  if (cookieToken) {
+    const payload = await verifySessionToken(cookieToken, env.SESSION_SECRET);
+    if (payload) return payload.sub;
+  }
+  // 2. Fall back to Authorization: Bearer (API clients)
   const authHeader = request.headers.get('Authorization');
   if (!authHeader?.startsWith('Bearer ')) return null;
   const token = authHeader.slice(7);
@@ -180,9 +191,20 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
         return Response.json({ error: err.error || 'Nonce verification failed' }, { status: 401 });
       }
 
-      // Issue session token
+      // Issue session token — set as HttpOnly cookie, don't expose in body
       const { token, expiresAt } = await createSessionToken(wallet, env.SESSION_SECRET);
-      return Response.json({ token, expiresAt }, { headers: { 'Cache-Control': 'no-store' } });
+      const cookie = buildSessionCookie(token, TOKEN_EXPIRY_SECS, isSecureOrigin(url));
+      return Response.json({ expiresAt }, {
+        headers: { 'Cache-Control': 'no-store', 'Set-Cookie': cookie },
+      });
+    }
+
+    // POST /auth/logout — clear session cookie
+    if (url.pathname === '/auth/logout' && request.method === 'POST') {
+      const cookie = buildClearCookie(isSecureOrigin(url));
+      return Response.json({ ok: true }, {
+        headers: { 'Set-Cookie': cookie, 'Cache-Control': 'no-store' },
+      });
     }
 
     // ── Authenticated endpoints ──────────────────────────────────────────
@@ -261,10 +283,10 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
         return await augment402WithSiwx(doResponse, env, authWallet, url);
       }
 
-      // If authenticated via SIWX, include the session token in response headers
+      // If authenticated via SIWX, set session cookie + expiry header
       if (siwxSession) {
         const headers = new Headers(doResponse.headers);
-        headers.set('X-Session-Token', siwxSession.token);
+        headers.set('Set-Cookie', buildSessionCookie(siwxSession.token, TOKEN_EXPIRY_SECS, isSecureOrigin(url)));
         headers.set('X-Session-Expires', String(siwxSession.expiresAt));
         return new Response(doResponse.body, { status: doResponse.status, headers });
       }

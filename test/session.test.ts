@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createSessionToken, verifySessionToken } from '../src/session';
+import { createSessionToken, verifySessionToken, buildSessionCookie, buildClearCookie, parseCookieToken, TOKEN_EXPIRY_SECS } from '../src/session';
 
 const SECRET = 'test-secret-key-for-hmac-signing-1234567890abcdef';
 
@@ -92,5 +92,66 @@ describe('createSessionToken + verifySessionToken', () => {
     const payload = await verifySessionToken(token, SECRET);
     expect(payload).not.toBeNull();
     expect(payload!.chain).toBeUndefined();
+  });
+});
+
+describe('buildSessionCookie', () => {
+  it('returns correctly formatted Set-Cookie value with Secure', () => {
+    const cookie = buildSessionCookie('my.jwt.token', 86400, true);
+    expect(cookie).toBe('ig_session=my.jwt.token; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400; Secure');
+  });
+
+  it('omits Secure flag when isSecure is false', () => {
+    const cookie = buildSessionCookie('my.jwt.token', 86400, false);
+    expect(cookie).toBe('ig_session=my.jwt.token; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400');
+    expect(cookie).not.toContain('Secure');
+  });
+
+  it('uses provided maxAgeSecs', () => {
+    const cookie = buildSessionCookie('tok', 3600, true);
+    expect(cookie).toContain('Max-Age=3600');
+  });
+});
+
+describe('buildClearCookie', () => {
+  it('returns cookie with Max-Age=0 and Secure', () => {
+    const cookie = buildClearCookie(true);
+    expect(cookie).toBe('ig_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure');
+  });
+
+  it('omits Secure flag when isSecure is false', () => {
+    const cookie = buildClearCookie(false);
+    expect(cookie).toBe('ig_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+    expect(cookie).not.toContain('Secure');
+  });
+});
+
+describe('parseCookieToken', () => {
+  it('extracts token from Cookie header', () => {
+    const token = parseCookieToken('ig_session=abc.def.ghi');
+    expect(token).toBe('abc.def.ghi');
+  });
+
+  it('extracts token when multiple cookies present', () => {
+    const token = parseCookieToken('other=foo; ig_session=abc.def.ghi; another=bar');
+    expect(token).toBe('abc.def.ghi');
+  });
+
+  it('returns null for missing cookie', () => {
+    expect(parseCookieToken('other=foo; bar=baz')).toBeNull();
+  });
+
+  it('returns null for null header', () => {
+    expect(parseCookieToken(null)).toBeNull();
+  });
+
+  it('returns null for empty cookie value', () => {
+    expect(parseCookieToken('ig_session=')).toBeNull();
+  });
+});
+
+describe('TOKEN_EXPIRY_SECS', () => {
+  it('is 24 hours in seconds', () => {
+    expect(TOKEN_EXPIRY_SECS).toBe(86400);
   });
 });

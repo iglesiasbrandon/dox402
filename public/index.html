@@ -784,29 +784,21 @@ DELETE /history   clear conversation</pre>
 
   // ── State ──────────────────────────────────────────────────────────────────
   let wallet         = localStorage.getItem('ig_wallet') || '';
-  let sessionToken   = localStorage.getItem('ig_session_token') || '';
   let paymentDetails = null;
   let pendingPrompt  = '';
   let pendingModel   = '';
   let estOpen        = false;
 
   // ── Session helpers ─────────────────────────────────────────────────────────
+  // Session JWT lives in an HttpOnly cookie (invisible to JS).
+  // We only track the expiry timestamp in localStorage for UI purposes.
   function isSessionValid() {
-    if (!sessionToken) return false;
     const exp = localStorage.getItem('ig_session_expires');
     if (!exp) return false;
     return Date.now() < parseInt(exp, 10) * 1000;
   }
 
-  function authHeaders() {
-    const h = {};
-    if (sessionToken) h['Authorization'] = 'Bearer ' + sessionToken;
-    return h;
-  }
-
   function clearSession() {
-    sessionToken = '';
-    localStorage.removeItem('ig_session_token');
     localStorage.removeItem('ig_session_expires');
   }
 
@@ -816,7 +808,7 @@ DELETE /history   clear conversation</pre>
       showConnected(wallet);
       // Run sequentially so fetchBalance can't race-clear session before loadHistory
       await fetchBalance();
-      if (wallet && sessionToken) {
+      if (wallet && isSessionValid()) {
         await loadHistory();
       }
     } else if (wallet && !isSessionValid()) {
@@ -890,11 +882,9 @@ DELETE /history   clear conversation</pre>
         const err = await loginRes.json().catch(() => ({}));
         throw new Error(err.error || 'Login failed');
       }
-      const { token, expiresAt } = await loginRes.json();
+      const { expiresAt } = await loginRes.json();
 
-      // 6. Store session
-      sessionToken = token;
-      localStorage.setItem('ig_session_token', token);
+      // 6. Store session expiry (token is in HttpOnly cookie, invisible to JS)
       localStorage.setItem('ig_session_expires', String(expiresAt));
 
       // 7. Continue with existing wallet flow
@@ -921,6 +911,7 @@ DELETE /history   clear conversation</pre>
     wallet = '';
     localStorage.removeItem('ig_wallet');
     clearSession();
+    fetch('/auth/logout', { method: 'POST' }).catch(() => {});
     hideErr();
     document.getElementById('walletConnected').style.display = 'none';
     document.getElementById('walletDisconnected').style.display = 'block';
@@ -960,9 +951,9 @@ DELETE /history   clear conversation</pre>
   }
 
   async function fetchBalance() {
-    if (!wallet || !sessionToken) return null;
+    if (!wallet || !isSessionValid()) return null;
     try {
-      const res = await fetch('/balance', { cache: 'no-store', headers: authHeaders() });
+      const res = await fetch('/balance', { cache: 'no-store' });
       if (res.status === 401) { handleSessionExpired(); return null; }
       if (!res.ok) return null;
       const d = await res.json();
@@ -976,6 +967,7 @@ DELETE /history   clear conversation</pre>
     clearSession();
     wallet = '';
     localStorage.removeItem('ig_wallet');
+    fetch('/auth/logout', { method: 'POST' }).catch(() => {});
     disconnect();
     showErr('Session expired — please sign in again.');
   }
@@ -989,7 +981,7 @@ DELETE /history   clear conversation</pre>
   );
 
   setInterval(() => {
-    if (!sessionToken) return;
+    if (!wallet) return;
     if (!isSessionValid()) { handleSessionExpired(); return; }
     if (Date.now() - lastActivity > IDLE_TIMEOUT_MS) {
       handleSessionExpired();
@@ -1130,7 +1122,7 @@ DELETE /history   clear conversation</pre>
       // Pass proof directly to doInfer and catch 402-after-payment as an error
       const inferRes = await fetch('/infer', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'PAYMENT-SIGNATURE': proofHeader, ...authHeaders() },
+        headers: { 'Content-Type': 'application/json', 'PAYMENT-SIGNATURE': proofHeader },
         body: JSON.stringify({ prompt: pendingPrompt, walletAddress: actualFrom, model: pendingModel }),
       });
       if (inferRes.status === 402) {
@@ -1199,7 +1191,7 @@ DELETE /history   clear conversation</pre>
   async function doInfer(prompt, proofHeader, model) {
     const capturedPreBalance = readDisplayedBalance();
     try {
-      const headers = { 'Content-Type': 'application/json', ...authHeaders() };
+      const headers = { 'Content-Type': 'application/json' };
       if (proofHeader) headers['PAYMENT-SIGNATURE'] = proofHeader;
 
       const res = await fetch('/infer', {
@@ -1380,7 +1372,7 @@ DELETE /history   clear conversation</pre>
       if (actualFrom !== wallet.toLowerCase()) {
         setTopupStatus('Wallet changed — re-authenticating…');
         await connectInjected();
-        if (!sessionToken) throw new Error('Re-authentication failed. Please sign in and try again.');
+        if (!isSessionValid()) throw new Error('Re-authentication failed. Please sign in and try again.');
       }
 
       // Send transaction
@@ -1412,7 +1404,7 @@ DELETE /history   clear conversation</pre>
         }
         depRes = await fetch('/deposit', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          headers: { 'Content-Type': 'application/json' },
           body: proofBody,
         });
         if (depRes.ok) { depData = await depRes.json(); break; }
@@ -1502,9 +1494,9 @@ DELETE /history   clear conversation</pre>
   }
 
   async function loadHistory() {
-    if (!wallet || !sessionToken) return;
+    if (!wallet || !isSessionValid()) return;
     try {
-      const res = await fetch('/history', { cache: 'no-store', headers: authHeaders() });
+      const res = await fetch('/history', { cache: 'no-store' });
       if (res.status === 401) { handleSessionExpired(); return; }
       if (!res.ok) return;
       const data = await res.json();
@@ -1524,7 +1516,7 @@ DELETE /history   clear conversation</pre>
 
   async function clearHistory() {
     if (!wallet) return;
-    try { await fetch('/history', { method: 'DELETE', headers: authHeaders() }); } catch (_) {}
+    try { await fetch('/history', { method: 'DELETE' }); } catch (_) {}
     const thread = document.getElementById('convoThread');
     thread.innerHTML = '<div class="convo-empty" id="convoEmpty">No messages yet. Ask anything to begin.</div>';
     document.getElementById('statusTxt').textContent = 'Conversation History';

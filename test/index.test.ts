@@ -9,7 +9,7 @@ vi.mock('cloudflare:workers', () => ({
 
 import worker from '../src/index';
 import { buildSiweMessage } from '../src/siwe';
-import { createSessionToken } from '../src/session';
+import { createSessionToken, buildSessionCookie, TOKEN_EXPIRY_SECS, parseCookieToken } from '../src/session';
 import type { Env } from '../src/types';
 
 const SESSION_SECRET = 'test-secret-for-integration-tests';
@@ -145,8 +145,8 @@ describe('CORS', () => {
     const res = await worker.fetch(req, makeEnv());
     expect(res.status).toBe(200);
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://dox402.example.com');
-    expect(res.headers.get('Access-Control-Expose-Headers')).not.toContain('X-Balance');
     expect(res.headers.get('Access-Control-Expose-Headers')).toContain('PAYMENT-REQUIRED');
+    expect(res.headers.get('Access-Control-Expose-Headers')).toContain('X-Session-Expires');
   });
 
   it('Access-Control-Allow-Origin reflects the request URL origin', async () => {
@@ -245,8 +245,11 @@ describe('SIWX on /infer', () => {
 
     const res = await worker.fetch(req, env);
     expect(res.status).toBe(200);
-    // Should include session token in response headers
-    expect(res.headers.get('X-Session-Token')).toBeTruthy();
+    // Should include session cookie in Set-Cookie header
+    const setCookie = res.headers.get('Set-Cookie');
+    expect(setCookie).toContain('ig_session=');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('SameSite=Strict');
     expect(res.headers.get('X-Session-Expires')).toBeTruthy();
   });
 
@@ -263,7 +266,10 @@ describe('SIWX on /infer', () => {
     });
 
     const res = await worker.fetch(req, env);
-    const token = res.headers.get('X-Session-Token')!;
+    // Extract token from Set-Cookie header
+    const setCookie = res.headers.get('Set-Cookie')!;
+    const token = parseCookieToken(setCookie)!;
+    expect(token).toBeTruthy();
     // Verify the token is valid and contains chain
     const { verifySessionToken } = await import('../src/session');
     const payload = await verifySessionToken(token, SESSION_SECRET);
@@ -340,8 +346,8 @@ describe('SIWX on /infer', () => {
 
     const res = await worker.fetch(req, env);
     expect(res.status).toBe(200);
-    // When Bearer token is used, NO X-Session-Token header (SIWX path not taken)
-    expect(res.headers.get('X-Session-Token')).toBeNull();
+    // When Bearer token is used, NO Set-Cookie header (SIWX path not taken)
+    expect(res.headers.get('Set-Cookie')).toBeNull();
   });
 
   it('rejects walletAddress mismatch with SIWX-authenticated wallet', async () => {
@@ -419,5 +425,154 @@ describe('402 SIWX augmentation on /infer', () => {
     expect(header).toBeTruthy();
     const decoded = JSON.parse(atob(header!)) as Record<string, any>;
     expect(decoded.extensions['sign-in-with-x'].info.nonce).toBe(nonce);
+  });
+});
+
+// ── Cookie-based Auth ──────────────────────────────────────────────────────
+
+describe('Cookie-based authentication', () => {
+  it('authenticates /balance via Cookie header', async () => {
+    const wallet = generateWallet();
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+
+    const { token } = await createSessionToken(wallet.address, SESSION_SECRET);
+    const req = new Request('https://dox402.example.com/balance', {
+      method: 'GET',
+      headers: { 'Cookie': `ig_session=${token}` },
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+  });
+
+  it('authenticates /infer via Cookie header', async () => {
+    const wallet = generateWallet();
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+
+    const { token } = await createSessionToken(wallet.address, SESSION_SECRET);
+    const req = new Request('https://dox402.example.com/infer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Cookie': `ig_session=${token}` },
+      body: JSON.stringify({ prompt: 'hello', walletAddress: wallet.address }),
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects invalid cookie token with 401', async () => {
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+
+    const req = new Request('https://dox402.example.com/balance', {
+      method: 'GET',
+      headers: { 'Cookie': 'ig_session=invalid.token.here' },
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(401);
+  });
+
+  it('prefers Cookie over Bearer token', async () => {
+    const wallet1 = generateWallet();
+    const wallet2 = generateWallet();
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+
+    const { token: cookieToken } = await createSessionToken(wallet1.address, SESSION_SECRET);
+    const { token: bearerToken } = await createSessionToken(wallet2.address, SESSION_SECRET);
+
+    const req = new Request('https://dox402.example.com/balance', {
+      method: 'GET',
+      headers: {
+        'Cookie': `ig_session=${cookieToken}`,
+        'Authorization': `Bearer ${bearerToken}`,
+      },
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+    // The DO stub should be accessed with wallet1's address (from cookie)
+    const calledName = doNS.idFromName.mock.calls[0][0];
+    expect(calledName).toBe(wallet1.address.slice(2).toLowerCase());
+  });
+});
+
+// ── Auth Login Cookie ───────────────────────────────────────────────────────
+
+describe('/auth/login cookie', () => {
+  const domain = 'dox402.example.com';
+
+  it('sets HttpOnly session cookie on login', async () => {
+    const wallet = generateWallet();
+    const nonce = 'abcdef1234567890abcdef1234567890';
+    const doNS = makeMockDONamespace({ nonceValue: nonce });
+    const env = makeEnv({ DOX402: doNS as any });
+
+    const now = new Date();
+    const message = buildSiweMessage({
+      domain,
+      address: wallet.address,
+      statement: 'Sign in to dox402 inference gateway',
+      uri: `https://${domain}`,
+      version: '1',
+      chainId: 8453,
+      nonce,
+      issuedAt: now.toISOString(),
+      expirationTime: new Date(now.getTime() + 300_000).toISOString(),
+    });
+    const signature = personalSign(message, wallet.privKey);
+
+    const req = new Request(`https://${domain}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, signature }),
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+
+    // Check Set-Cookie header
+    const setCookie = res.headers.get('Set-Cookie');
+    expect(setCookie).toContain('ig_session=');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('SameSite=Strict');
+    expect(setCookie).toContain('Secure');
+    expect(setCookie).toContain('Path=/');
+
+    // Response body should NOT contain token
+    const body = await res.json() as Record<string, any>;
+    expect(body.token).toBeUndefined();
+    expect(body.expiresAt).toBeDefined();
+  });
+});
+
+// ── Auth Logout ──────────────────────────────────────────────────────────────
+
+describe('/auth/logout', () => {
+  it('clears session cookie', async () => {
+    const req = new Request('https://dox402.example.com/auth/logout', { method: 'POST' });
+    const res = await worker.fetch(req, makeEnv());
+    expect(res.status).toBe(200);
+
+    const setCookie = res.headers.get('Set-Cookie');
+    expect(setCookie).toContain('ig_session=');
+    expect(setCookie).toContain('Max-Age=0');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('SameSite=Strict');
+
+    const body = await res.json() as Record<string, any>;
+    expect(body.ok).toBe(true);
+  });
+
+  it('omits Secure flag on http', async () => {
+    const req = new Request('http://localhost:8787/auth/logout', { method: 'POST' });
+    const res = await worker.fetch(req, makeEnv());
+    expect(res.status).toBe(200);
+
+    const setCookie = res.headers.get('Set-Cookie');
+    expect(setCookie).not.toContain('Secure');
   });
 });

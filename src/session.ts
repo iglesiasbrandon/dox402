@@ -1,7 +1,8 @@
 // Stateless JWT-like session tokens using Web Crypto HMAC-SHA256.
 // No external dependencies — uses crypto.subtle available natively in Cloudflare Workers.
 
-const TOKEN_EXPIRY_SECS = 86400; // 24 hours
+export const TOKEN_EXPIRY_SECS = 86400; // 24 hours
+const COOKIE_NAME = 'ig_session';
 
 interface SessionPayload {
   sub: string;    // wallet address (lowercase, 0x-prefixed)
@@ -101,4 +102,42 @@ function b64urlDecode(input: string): string {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return new TextDecoder().decode(bytes);
+}
+
+// ── HttpOnly cookie helpers ────────────────────────────────────────────────────
+
+/** Build a Set-Cookie header value for the session JWT */
+export function buildSessionCookie(token: string, maxAgeSecs: number, isSecure: boolean): string {
+  const parts = [
+    `${COOKIE_NAME}=${token}`,
+    'HttpOnly',
+    'SameSite=Strict',
+    'Path=/',
+    `Max-Age=${maxAgeSecs}`,
+  ];
+  if (isSecure) parts.push('Secure');
+  return parts.join('; ');
+}
+
+/** Build a Set-Cookie header that clears the session cookie */
+export function buildClearCookie(isSecure: boolean): string {
+  const parts = [
+    `${COOKIE_NAME}=`,
+    'HttpOnly',
+    'SameSite=Strict',
+    'Path=/',
+    'Max-Age=0',
+  ];
+  if (isSecure) parts.push('Secure');
+  return parts.join('; ');
+}
+
+/** Extract the session token from a Cookie request header */
+export function parseCookieToken(cookieHeader: string | null): string | null {
+  if (!cookieHeader) return null;
+  const match = cookieHeader.split(';').map(s => s.trim())
+    .find(s => s.startsWith(`${COOKIE_NAME}=`));
+  if (!match) return null;
+  const value = match.slice(COOKIE_NAME.length + 1);
+  return value || null;
 }
