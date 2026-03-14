@@ -487,7 +487,7 @@
           Most payment-gated APIs bolt a database onto a stateless server — Postgres for balances, Redis for rate-limiting, a separate auth layer for identity. Durable Objects collapse all of that into a single primitive.
         </p>
         <p style="font-size:13px;color:var(--muted);line-height:1.65;margin:0">
-          Each wallet is routed to its own DO instance via <a href="https://developers.cloudflare.com/durable-objects/api/namespace/" target="_blank"><code>idFromName</code></a>. That instance owns its µUSDC balance exclusively — no shared state, no contention, no double-spend. Replay prevention uses <a href="https://developers.cloudflare.com/durable-objects/api/transactional-storage-api/" target="_blank"><code>storage.transaction()</code></a> to atomically check a <code>seen:{txHash}</code> key and top up the balance in one operation, at the edge, with no external infrastructure.
+          Each wallet is routed to its own DO instance via <a href="https://developers.cloudflare.com/durable-objects/api/namespace/" target="_blank"><code>idFromName</code></a>. The Worker calls typed <a href="https://developers.cloudflare.com/durable-objects/api/rpc/" target="_blank">RPC methods</a> directly on the stub — no HTTP routing inside the DO, just plain function calls with full type safety. Each instance owns its µUSDC balance exclusively — no shared state, no contention, no double-spend. Replay prevention uses <a href="https://developers.cloudflare.com/durable-objects/api/transactional-storage-api/" target="_blank"><code>storage.transaction()</code></a> to atomically check a <code>seen:{txHash}</code> key and top up the balance in one operation, at the edge, with no external infrastructure.
         </p>
       </div>
 
@@ -508,15 +508,15 @@ sequenceDiagram
     participant S as Storage
     participant AI as Workers AI
     C->>W: GET /auth/nonce
-    W->>DO: generate nonce
+    W->>DO: RPC handleNonce()
     DO-->>C: { nonce }
     C->>W: POST /auth/login {message, sig}
     W->>W: recover address (EIP-191)
-    W->>DO: verify nonce (one-time)
+    W->>DO: RPC handleVerifyNonce(nonce)
     W-->>C: { token, expiresAt }
     C->>W: POST /infer + Bearer token
     W->>W: verify HMAC session
-    W->>DO: idFromName(wallet)
+    W->>DO: RPC handleInfer(body, wallet)
     DO->>S: get balance + history
     DO->>AI: messages[...history, prompt]
     AI-->>C: SSE stream
