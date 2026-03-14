@@ -144,10 +144,6 @@ export class InferenceGate extends DurableObject<Env> {
             status: 'pending',
           } satisfies PendingVerification);
 
-          const hashes = (await txn.get<string[]>('pendingTxHashes')) ?? [];
-          hashes.push(proof.txHash);
-          await txn.put('pendingTxHashes', hashes);
-
           const provBal = (await txn.get<number>('provisionalBalance')) ?? 0;
           await txn.put('provisionalBalance', provBal + creditAmount);
         }
@@ -349,10 +345,6 @@ export class InferenceGate extends DurableObject<Env> {
             status: 'pending',
           } satisfies PendingVerification);
 
-          const hashes = (await txn.get<string[]>('pendingTxHashes')) ?? [];
-          hashes.push(proof.txHash);
-          await txn.put('pendingTxHashes', hashes);
-
           const provBal = (await txn.get<number>('provisionalBalance')) ?? 0;
           await txn.put('provisionalBalance', provBal + creditAmount);
         }
@@ -432,8 +424,12 @@ export class InferenceGate extends DurableObject<Env> {
     const provBal = (await this.ctx.storage.get<number>('provisionalBalance')) ?? 0;
     if (provBal + amount > GRACE_MAX_PROVISIONAL_MICRO_USDC) return false;
 
-    const hashes = (await this.ctx.storage.get<string[]>('pendingTxHashes')) ?? [];
-    if (hashes.length >= GRACE_MAX_PENDING) return false;
+    const pendingEntries = await this.ctx.storage.list({ prefix: 'pending:' });
+    let pendingCount = 0;
+    for (const [, value] of pendingEntries) {
+      if ((value as PendingVerification).status === 'pending') pendingCount++;
+    }
+    if (pendingCount >= GRACE_MAX_PENDING) return false;
 
     return true;
   }
@@ -445,13 +441,6 @@ export class InferenceGate extends DurableObject<Env> {
     const existing = await this.ctx.storage.getAlarm();
     if (existing !== null && existing <= target) return; // earlier alarm already scheduled
     await this.ctx.storage.setAlarm(target);
-  }
-
-  /** Remove a pending entry from the tracking list */
-  private async removePendingEntry(txHash: string): Promise<void> {
-    const hashes = (await this.ctx.storage.get<string[]>('pendingTxHashes')) ?? [];
-    const filtered = hashes.filter(h => h !== txHash);
-    await this.ctx.storage.put('pendingTxHashes', filtered);
   }
 
   /** Remove expired seen:{txHash} and terminal pending:{txHash} keys from storage.
@@ -492,9 +481,7 @@ export class InferenceGate extends DurableObject<Env> {
 
   /** Clear provisional balance tracking for a resolved entry.
    *  If `reverseCredit` is true, also deducts the amount from the wallet balance. */
-  private async clearProvisionalCredit(txHash: string, amount: number, reverseCredit: boolean): Promise<void> {
-    await this.removePendingEntry(txHash);
-
+  private async clearProvisionalCredit(amount: number, reverseCredit: boolean): Promise<void> {
     const provBal = (await this.ctx.storage.get<number>('provisionalBalance')) ?? 0;
     await this.ctx.storage.put('provisionalBalance', Math.max(0, provBal - amount));
 
@@ -515,18 +502,18 @@ export class InferenceGate extends DurableObject<Env> {
       this.wallet = (await this.ctx.storage.get<string>('walletAddress')) ?? '';
     }
 
+    // Migration: remove legacy pendingTxHashes array (replaced by storage.list prefix scan)
+    await this.ctx.storage.delete('pendingTxHashes');
+
     // ── Grace mode re-verification ────────────────────────────────────────────
-    const hashes = (await this.ctx.storage.get<string[]>('pendingTxHashes')) ?? [];
+    const pendingEntries = await this.ctx.storage.list({ prefix: 'pending:' });
     let anyStillPending = false;
     let nextRetryMs = Infinity;
 
-    for (const txHash of [...hashes]) {
-      const key = `pending:${txHash}`;
-      const entry = await this.ctx.storage.get<PendingVerification>(key);
-      if (!entry || entry.status !== 'pending') {
-        await this.removePendingEntry(txHash);
-        continue;
-      }
+    for (const [key, value] of pendingEntries) {
+      const entry = value as PendingVerification;
+      if (entry.status !== 'pending') continue; // skip terminal entries (handled by cleanup)
+      const txHash = key.slice('pending:'.length);
 
       // Attempt re-verification via RPC
       const result = await verifyProof(entry.proof, this.walletAddress, this.env);
@@ -538,7 +525,7 @@ export class InferenceGate extends DurableObject<Env> {
         // RPC confirmed the transaction — mark as verified
         entry.status = 'confirmed';
         await this.ctx.storage.put(key, entry);
-        await this.clearProvisionalCredit(txHash, entry.creditedAmount, false);
+        await this.clearProvisionalCredit(entry.creditedAmount, false);
         console.log('[dox402] Re-verification CONFIRMED tx %s, wallet %s', txHash, this.walletAddress);
         continue;
       }
@@ -549,7 +536,7 @@ export class InferenceGate extends DurableObject<Env> {
           entry.status = 'expired';
           entry.lastError = result.reason;
           await this.ctx.storage.put(key, entry);
-          await this.clearProvisionalCredit(txHash, entry.creditedAmount, false);
+          await this.clearProvisionalCredit(entry.creditedAmount, false);
           console.error('[dox402] Re-verification EXPIRED after %d attempts for tx %s, wallet %s — keeping credit',
             entry.retryCount, txHash, this.walletAddress);
           continue;
@@ -568,7 +555,7 @@ export class InferenceGate extends DurableObject<Env> {
       entry.status = 'reversed';
       entry.lastError = result.reason;
       await this.ctx.storage.put(key, entry);
-      await this.clearProvisionalCredit(txHash, entry.creditedAmount, true);
+      await this.clearProvisionalCredit(entry.creditedAmount, true);
       console.error('[dox402] Re-verification REVERSED tx %s, wallet %s — reason: %s',
         txHash, this.walletAddress, result.reason);
     }

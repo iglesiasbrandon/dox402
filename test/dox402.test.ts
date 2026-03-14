@@ -309,7 +309,6 @@ describe('InferenceGate — alarm re-verification', () => {
       status: 'pending',
     };
     storage._data.set(`pending:${txHash}`, entry);
-    storage._data.set('pendingTxHashes', [txHash]);
     storage._data.set('provisionalBalance', opts?.creditedAmount ?? 1000);
     storage._data.set('walletAddress', '0xtest');
   }
@@ -327,7 +326,6 @@ describe('InferenceGate — alarm re-verification', () => {
     expect(entry.status).toBe('confirmed');
     expect(storage._data.get('provisionalBalance')).toBe(0);
     expect(storage._data.get('balance')).toBe(1000); // balance unchanged
-    expect((storage._data.get('pendingTxHashes') as string[]).length).toBe(0);
   });
 
   it('reverses fraudulent transaction on re-verification', async () => {
@@ -389,7 +387,6 @@ describe('InferenceGate — alarm re-verification', () => {
     };
     storage._data.set(`pending:${txHash1}`, entry1);
     storage._data.set(`pending:${txHash2}`, entry2);
-    storage._data.set('pendingTxHashes', [txHash1, txHash2]);
     storage._data.set('provisionalBalance', 3000);
     storage._data.set('walletAddress', '0xtest');
     storage._data.set('balance', 3000);
@@ -473,7 +470,7 @@ describe('InferenceGate — storage cleanup', () => {
     const { gate, storage } = makeTestDO();
     storage._data.set('walletAddress', '0xtest');
 
-    // Old but still-pending entry — cleanup must NOT delete it (only grace mode processes it)
+    // Old but still-pending entry — cleanup must NOT delete it
     const activeEntry: PendingVerification = {
       proof: { txHash: '0x' + 'd'.repeat(64), from: '0xtest', amount: '1000', timestamp: Math.floor(Date.now() / 1000), signature: '0xsig' },
       creditedAmount: 1000,
@@ -482,11 +479,14 @@ describe('InferenceGate — storage cleanup', () => {
       status: 'pending',
     };
     storage._data.set('pending:0x' + 'd'.repeat(64), activeEntry);
-    // Do NOT add to pendingTxHashes — this isolates cleanup behavior from grace mode processing
+    storage._data.set('provisionalBalance', 1000);
+
+    // Grace mode will attempt re-verification — mock as still-provisional (RPC unreachable)
+    verifyProofSpy.mockResolvedValue({ valid: true, provisional: true, reason: 'RPC timeout' });
 
     await gate.alarm();
 
-    // Cleanup should skip entries with status='pending', even if they're very old
+    // Entry should still exist and remain pending (not deleted by cleanup, kept by grace mode)
     expect(storage._data.has('pending:0x' + 'd'.repeat(64))).toBe(true);
     const kept = storage._data.get('pending:0x' + 'd'.repeat(64)) as PendingVerification;
     expect(kept.status).toBe('pending');
