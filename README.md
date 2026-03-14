@@ -32,6 +32,7 @@ PAYMENT_ADDRESS=0x...
 BASE_RPC_URL=https://mainnet.base.org
 MOCK_PAYMENTS=true
 SESSION_SECRET=<any-hex-string>
+ADMIN_SECRET=dev-admin-secret-for-local-testing
 ```
 
 Run unit tests (no server needed):
@@ -57,6 +58,7 @@ The E2E test generates a random wallet, signs SIWE messages programmatically usi
 npx wrangler secret put PAYMENT_ADDRESS   # your USDC-receiving wallet
 npx wrangler secret put BASE_RPC_URL      # e.g. https://mainnet.base.org
 npx wrangler secret put SESSION_SECRET    # generate with: openssl rand -hex 32
+npx wrangler secret put ADMIN_SECRET      # generate with: openssl rand -hex 32
 
 npx wrangler deploy
 
@@ -68,7 +70,7 @@ curl https://<worker>.workers.dev/health
 
 ## API
 
-All authenticated endpoints require `Authorization: Bearer <token>` (obtained via SIWE login).
+Authenticated endpoints accept either an `Authorization: Bearer <token>` header or an `ig_session` HttpOnly cookie (both obtained via SIWE login).
 
 ### Public
 | Endpoint | Description |
@@ -80,16 +82,25 @@ All authenticated endpoints require `Authorization: Bearer <token>` (obtained vi
 | Endpoint | Description |
 |---|---|
 | `GET /auth/nonce?wallet=0x...` | Generate one-time nonce |
-| `POST /auth/login` | Verify SIWE signature → JWT |
+| `POST /auth/login` | Verify SIWE signature → session cookie + JWT |
+| `POST /auth/logout` | Clear session cookie |
 
 ### Authenticated
 | Endpoint | Description |
 |---|---|
-| `POST /infer` | Run inference (post-billed from balance) |
+| `POST /infer` | Run inference (post-billed from balance, SSE stream) |
 | `POST /deposit` | Top-up balance with payment proof |
 | `GET /balance` | Credit balance + usage stats |
 | `GET /history` | Conversation messages + metadata |
 | `DELETE /history` | Clear conversation |
+
+### Admin (requires `ADMIN_SECRET` Bearer token)
+| Endpoint | Description |
+|---|---|
+| `GET /admin/wallets` | Paginated wallet list from KV registry |
+| `GET /admin/wallets/:wallet/status` | Detailed DO status for a specific wallet |
+| `GET /admin/stats` | Total registered wallet count |
+| `GET /admin/stale` | Identify zero-balance inactive wallets |
 
 ---
 
@@ -104,18 +115,11 @@ All authenticated endpoints require `Authorization: Bearer <token>` (obtained vi
 
 ## Architecture
 
-- **Durable Object** (`Dox402`): one instance per wallet address. Holds credit balance and seen-txHash keys in strongly-consistent storage. All credit updates happen inside `storage.transaction()` to prevent race conditions.
-- **Worker** (`index.ts`): validates wallet address format, routes to the correct DO instance.
-- **Replay prevention**: each payment hash stored as `seen:{txHash} = timestamp` (individual keys — O(1) lookup, no array read).
-- **Authentication**: SIWE (EIP-4361) proves wallet ownership; stateless HMAC-SHA256 JWTs for session management.
-- **Verification**: Tier 1 structural checks + Tier 2 on-chain RPC receipt verification via `eth_getTransactionReceipt`.
-
----
-
-## Known Limitations
-
-| Limitation | Impact | Tracked |
-|-----------|--------|---------|
-| No credit refund on AI failure | User loses credit on Workers AI 5xx | [#1](https://github.com/iglesiasbrandon/dox402/issues/1) |
-| No streaming backpressure | Large responses may hit CF limits | [#2](https://github.com/iglesiasbrandon/dox402/issues/2) |
-| RPC failure rejects valid payments | No graceful fallback on RPC downtime | [#3](https://github.com/iglesiasbrandon/dox402/issues/3) |
+- **Durable Object** (`InferenceGate`): one instance per wallet address with embedded SQLite storage. Holds credit balance, conversation history, rate limits, and replay-prevention data. All credit updates happen inside `storage.transactionSync()` to prevent race conditions. New DOs are co-located in Eastern North America (`locationHint: 'enam'`) to minimize latency to Base chain RPC providers.
+- **Worker** (`index.ts`): validates wallet address format, authenticates via SIWE session tokens or SIWX headers, routes to the correct DO instance via typed RPC stubs.
+- **KV Registry** (`WALLET_REGISTRY`): global index of all active wallet DO instances, updated on first use via fire-and-forget `ctx.waitUntil()` calls. Powers the admin endpoints for fleet visibility.
+- **Replay prevention**: each payment hash stored in the `seen_transactions` SQL table with automatic 1-hour TTL cleanup via DO alarms.
+- **Authentication**: SIWE (EIP-4361) proves wallet ownership; HMAC-SHA256 JWTs delivered as HttpOnly cookies (browser) or Bearer tokens (API). SIWX single-request auth also supported for x402 clients.
+- **Verification**: Tier 1 structural checks + Tier 2 on-chain RPC receipt verification via `eth_getTransactionReceipt`. Grace mode provides provisional credit when RPC is unreachable, with automatic alarm-based re-verification.
+- **Streaming**: SSE responses with heartbeat keepalive (`:keepalive` comments every 15s of inactivity) and a 2-minute max-duration guard to prevent runaway streams. Backpressure is handled naturally via `await writer.write()`.
+- **Billing safeguards**: failed AI responses (empty, error JSON, stream errors) are detected and not billed — credits are only deducted for successful inference.

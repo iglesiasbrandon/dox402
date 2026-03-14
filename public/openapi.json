@@ -13,7 +13,7 @@
   },
   "servers": [
     {
-      "url": "https://dox402.iglesias-brandon.workers.dev",
+      "url": "https://inference-gate.iglesias-brandon.workers.dev",
       "description": "Production"
     }
   ],
@@ -104,9 +104,9 @@
     },
     "/auth/login": {
       "post": {
-        "summary": "Verify SIWE signature and issue session token",
+        "summary": "Verify SIWE signature and issue session",
         "operationId": "postAuthLogin",
-        "description": "Step 2 of authentication: submit the signed EIP-4361 message. On success, receive a JWT session token valid for 24 hours.",
+        "description": "Step 2 of authentication: submit the signed EIP-4361 message. On success, sets an HttpOnly session cookie (ig_session) and returns the token expiry. The token is valid for 24 hours.",
         "requestBody": {
           "required": true,
           "content": {
@@ -130,17 +130,19 @@
         },
         "responses": {
           "200": {
-            "description": "Authentication successful",
+            "description": "Authentication successful. Session token set as HttpOnly cookie.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "HttpOnly session cookie (ig_session=JWT; HttpOnly; SameSite=Strict; Secure; Path=/)",
+                "schema": { "type": "string" }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["token", "expiresAt"],
+                  "required": ["expiresAt"],
                   "properties": {
-                    "token": {
-                      "type": "string",
-                      "description": "JWT session token (HMAC-SHA256 signed)"
-                    },
                     "expiresAt": {
                       "type": "integer",
                       "description": "Token expiry as Unix timestamp (seconds)"
@@ -169,13 +171,42 @@
         }
       }
     },
+    "/auth/logout": {
+      "post": {
+        "summary": "Clear session cookie",
+        "operationId": "postAuthLogout",
+        "description": "Clears the ig_session HttpOnly cookie by setting Max-Age=0.",
+        "responses": {
+          "200": {
+            "description": "Session cookie cleared",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Expired session cookie (Max-Age=0)",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean", "const": true }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/infer": {
       "post": {
         "summary": "Run AI inference (streamed)",
         "operationId": "postInfer",
-        "description": "Submit a prompt for AI text generation. Returns a Server-Sent Events stream. Requires authentication and a positive credit balance. If balance is zero and no payment proof is provided, returns 402 with payment instructions and SIWX extension for auth discovery.",
+        "description": "Submit a prompt for AI text generation. Returns a Server-Sent Events stream with heartbeat keepalive (:keepalive comments every 15s of inactivity) and a 2-minute max-duration guard. Requires authentication and a positive credit balance. If balance is zero and no payment proof is provided, returns 402 with payment instructions and SIWX extension for auth discovery.",
         "security": [
           { "BearerAuth": [] },
+          { "CookieAuth": [] },
           { "SiwxAuth": [] }
         ],
         "requestBody": {
@@ -197,18 +228,18 @@
         ],
         "responses": {
           "200": {
-            "description": "Inference stream",
+            "description": "Inference stream (SSE). Includes :keepalive comments during idle periods and data: [DONE] at stream end.",
             "headers": {
-              "X-Balance": {
-                "description": "Pre-deduction credit balance in uUSDC",
-                "schema": { "type": "string" }
-              },
-              "X-Session-Token": {
-                "description": "New session token (only present when authenticated via SIWX header)",
+              "Set-Cookie": {
+                "description": "Session cookie (only present when authenticated via SIWX header)",
                 "schema": { "type": "string" }
               },
               "X-Session-Expires": {
                 "description": "Session token expiry as Unix timestamp (only present when authenticated via SIWX header)",
+                "schema": { "type": "string" }
+              },
+              "X-Payment-Status": {
+                "description": "Set to 'provisional' when payment was credited via grace mode (RPC was unreachable)",
                 "schema": { "type": "string" }
               }
             },
@@ -216,54 +247,22 @@
               "text/event-stream": {
                 "schema": {
                   "type": "string",
-                  "description": "SSE stream. Each event is `data: {\"response\":\"...chunk...\"}` followed by `data: [DONE]` when complete."
+                  "description": "SSE stream. Data events: data: {\"response\":\"...chunk...\"}. Keepalive: :keepalive. Terminal: data: [DONE]."
                 }
               }
             }
           },
-          "401": {
-            "description": "Missing or invalid session token / SIWX header",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-              }
-            }
-          },
+          "401": { "description": "Missing or invalid session token / SIWX header", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "402": {
             "description": "Insufficient balance. Response includes payment instructions and SIWX auth extension.",
-            "headers": {
-              "PAYMENT-REQUIRED": {
-                "description": "Base64-encoded PaymentRequired JSON (x402 spec)",
-                "schema": { "type": "string" }
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/PaymentRequired" }
-              }
-            }
+            "headers": { "PAYMENT-REQUIRED": { "description": "Base64-encoded PaymentRequired JSON (x402 spec)", "schema": { "type": "string" } } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentRequired" } } }
           },
-          "403": {
-            "description": "walletAddress in body does not match authenticated session",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-              }
-            }
-          },
+          "403": { "description": "walletAddress in body does not match authenticated session", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "429": {
             "description": "Rate limit exceeded (60 requests per minute per wallet)",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds until the rate limit window resets",
-                "schema": { "type": "string" }
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-              }
-            }
+            "headers": { "Retry-After": { "description": "Seconds until the rate limit window resets", "schema": { "type": "string" } } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
           }
         }
       }
@@ -272,48 +271,24 @@
       "post": {
         "summary": "Top up credit balance with USDC payment proof",
         "operationId": "postDeposit",
-        "description": "Submit an on-chain USDC payment proof to add credits to your balance without running inference.",
-        "security": [{ "BearerAuth": [] }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/DepositRequest" }
-            }
-          }
-        },
+        "description": "Submit an on-chain USDC payment proof to add credits to your balance without running inference. Supports grace mode: if RPC is unreachable, credits are provisionally granted and verified asynchronously.",
+        "security": [{ "BearerAuth": [] }, { "CookieAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DepositRequest" } } } },
         "responses": {
           "200": {
             "description": "Deposit successful",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "ok": { "type": "boolean", "const": true },
-                    "credited": { "type": "integer", "description": "uUSDC credited from this deposit" },
-                    "balance": { "type": "integer", "description": "New total balance in uUSDC" }
-                  }
-                }
+            "content": { "application/json": { "schema": {
+              "type": "object",
+              "properties": {
+                "ok": { "type": "boolean", "const": true },
+                "credited": { "type": "integer", "description": "uUSDC credited from this deposit" },
+                "balance": { "type": "integer", "description": "New total balance in uUSDC" },
+                "provisional": { "type": "boolean", "description": "True if credit was granted provisionally (RPC unreachable)" }
               }
-            }
+            } } }
           },
-          "401": {
-            "description": "Missing or invalid session token",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-              }
-            }
-          },
-          "402": {
-            "description": "Payment proof verification failed",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-              }
-            }
-          }
+          "401": { "description": "Missing or invalid session token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "402": { "description": "Payment proof verification failed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
         }
       }
     },
@@ -321,24 +296,10 @@
       "get": {
         "summary": "Get credit balance and usage stats",
         "operationId": "getBalance",
-        "security": [{ "BearerAuth": [] }],
+        "security": [{ "BearerAuth": [] }, { "CookieAuth": [] }],
         "responses": {
-          "200": {
-            "description": "Balance and usage statistics",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/BalanceResponse" }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid session token",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-              }
-            }
-          }
+          "200": { "description": "Balance and usage statistics", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BalanceResponse" } } } },
+          "401": { "description": "Missing or invalid session token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
         }
       }
     },
@@ -347,60 +308,79 @@
         "summary": "Get conversation history",
         "operationId": "getHistory",
         "description": "Returns the stored conversation messages for this wallet. Capped at 20 messages (10 exchanges).",
-        "security": [{ "BearerAuth": [] }],
+        "security": [{ "BearerAuth": [] }, { "CookieAuth": [] }],
         "responses": {
-          "200": {
-            "description": "Conversation history",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "history": {
-                      "type": "array",
-                      "items": { "$ref": "#/components/schemas/ConversationMessage" }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid session token",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-              }
-            }
-          }
+          "200": { "description": "Conversation history", "content": { "application/json": { "schema": { "type": "object", "properties": { "history": { "type": "array", "items": { "$ref": "#/components/schemas/ConversationMessage" } } } } } } },
+          "401": { "description": "Missing or invalid session token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
         }
       },
       "delete": {
         "summary": "Clear conversation history",
         "operationId": "deleteHistory",
-        "security": [{ "BearerAuth": [] }],
+        "security": [{ "BearerAuth": [] }, { "CookieAuth": [] }],
         "responses": {
-          "200": {
-            "description": "History cleared",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "ok": { "type": "boolean", "const": true }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid session token",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-              }
-            }
-          }
+          "200": { "description": "History cleared", "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "type": "boolean", "const": true } } } } } },
+          "401": { "description": "Missing or invalid session token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/admin/wallets": {
+      "get": {
+        "summary": "List registered wallets",
+        "operationId": "getAdminWallets",
+        "description": "Paginated list of all wallet addresses registered in the KV registry.",
+        "security": [{ "AdminAuth": [] }],
+        "parameters": [
+          { "name": "limit", "in": "query", "required": false, "description": "Max wallets to return (1-1000, default 100)", "schema": { "type": "integer", "default": 100 } },
+          { "name": "cursor", "in": "query", "required": false, "description": "Pagination cursor from a previous response", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Paginated wallet list", "content": { "application/json": { "schema": { "type": "object", "properties": { "wallets": { "type": "array", "items": { "type": "object", "properties": { "wallet": { "type": "string" } } } }, "cursor": { "type": "string", "nullable": true }, "hasMore": { "type": "boolean" } } } } } },
+          "401": { "description": "Missing or invalid admin token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "503": { "description": "ADMIN_SECRET not configured", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/admin/wallets/{wallet}/status": {
+      "get": {
+        "summary": "Get detailed wallet DO status",
+        "operationId": "getAdminWalletStatus",
+        "description": "Returns detailed Durable Object status for a specific wallet.",
+        "security": [{ "AdminAuth": [] }],
+        "parameters": [{ "name": "wallet", "in": "path", "required": true, "description": "Ethereum wallet address (0x + 40 hex chars)", "schema": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" } }],
+        "responses": {
+          "200": { "description": "Detailed wallet status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminWalletStatus" } } } },
+          "400": { "description": "Invalid wallet address format", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "401": { "description": "Missing or invalid admin token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/admin/stats": {
+      "get": {
+        "summary": "Aggregate statistics",
+        "operationId": "getAdminStats",
+        "description": "Returns the total number of registered wallets.",
+        "security": [{ "AdminAuth": [] }],
+        "responses": {
+          "200": { "description": "Aggregate stats", "content": { "application/json": { "schema": { "type": "object", "properties": { "totalWallets": { "type": "integer" } } } } } },
+          "401": { "description": "Missing or invalid admin token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/admin/stale": {
+      "get": {
+        "summary": "Find stale wallets",
+        "operationId": "getAdminStale",
+        "description": "Identifies zero-balance inactive wallets by fan-out querying each DO instance.",
+        "security": [{ "AdminAuth": [] }],
+        "parameters": [
+          { "name": "inactive_days", "in": "query", "required": false, "description": "Consider wallets inactive if not used in this many days (default 30)", "schema": { "type": "integer", "default": 30 } },
+          { "name": "max_balance", "in": "query", "required": false, "description": "Only include wallets with balance at or below this value in uUSDC (default 0)", "schema": { "type": "integer", "default": 0 } },
+          { "name": "limit", "in": "query", "required": false, "description": "Max stale wallets to return (1-200, default 50)", "schema": { "type": "integer", "default": 50 } }
+        ],
+        "responses": {
+          "200": { "description": "Stale wallets matching criteria", "content": { "application/json": { "schema": { "type": "object", "properties": { "stale": { "type": "array", "items": { "$ref": "#/components/schemas/AdminWalletStatus" } }, "count": { "type": "integer" }, "criteria": { "type": "object", "properties": { "inactiveDays": { "type": "integer" }, "maxBalance": { "type": "integer" }, "limit": { "type": "integer" } } } } } } } },
+          "401": { "description": "Missing or invalid admin token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
         }
       }
     }
@@ -413,67 +393,42 @@
         "bearerFormat": "JWT",
         "description": "Session token obtained via POST /auth/login. Valid for 24 hours. Flow: 1) GET /auth/nonce?wallet=0x... 2) Sign EIP-4361 message with wallet 3) POST /auth/login with {message, signature}"
       },
+      "CookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "ig_session",
+        "description": "HttpOnly session cookie set by POST /auth/login. Contains the same JWT as BearerAuth. Preferred for browser clients."
+      },
       "SiwxAuth": {
         "type": "apiKey",
         "in": "header",
         "name": "SIGN-IN-WITH-X",
-        "description": "Base64-encoded SIWX payload for single-request authentication (x402 SIWX spec). Contains {message, signature, chainId, type, address}. Server returns X-Session-Token header for subsequent requests."
+        "description": "Base64-encoded SIWX payload for single-request authentication (x402 SIWX spec). Contains {message, signature, chainId, type, address}. Server sets ig_session cookie in the response for subsequent requests."
+      },
+      "AdminAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Admin secret token set via ADMIN_SECRET environment variable. Used for admin/ops endpoints only."
       }
     },
     "schemas": {
-      "ErrorResponse": {
-        "type": "object",
-        "required": ["error"],
-        "properties": {
-          "error": { "type": "string" }
-        }
-      },
+      "ErrorResponse": { "type": "object", "required": ["error"], "properties": { "error": { "type": "string" } } },
       "InferRequest": {
         "type": "object",
         "required": ["prompt", "walletAddress"],
         "properties": {
-          "prompt": {
-            "type": "string",
-            "description": "The user prompt for AI text generation"
-          },
-          "walletAddress": {
-            "type": "string",
-            "pattern": "^0x[0-9a-fA-F]{40}$",
-            "description": "Must match the authenticated wallet address"
-          },
-          "maxTokens": {
-            "type": "integer",
-            "default": 512,
-            "maximum": 2048,
-            "description": "Maximum tokens to generate"
-          },
-          "model": {
-            "type": "string",
-            "default": "@cf/meta/llama-3.1-8b-instruct",
-            "enum": [
-              "@cf/meta/llama-3.1-8b-instruct",
-              "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-              "@cf/google/gemma-3-12b-it",
-              "@cf/mistral/mistral-7b-instruct-v0.2",
-              "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"
-            ],
-            "description": "Workers AI model ID"
-          }
+          "prompt": { "type": "string", "description": "The user prompt for AI text generation" },
+          "walletAddress": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$", "description": "Must match the authenticated wallet address" },
+          "maxTokens": { "type": "integer", "default": 512, "maximum": 2048, "description": "Maximum tokens to generate" },
+          "model": { "type": "string", "default": "@cf/meta/llama-3.1-8b-instruct", "enum": ["@cf/meta/llama-3.1-8b-instruct", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/google/gemma-3-12b-it", "@cf/mistral/mistral-7b-instruct-v0.2", "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"], "description": "Workers AI model ID" }
         }
       },
       "DepositRequest": {
         "type": "object",
         "required": ["walletAddress", "proof"],
         "properties": {
-          "walletAddress": {
-            "type": "string",
-            "pattern": "^0x[0-9a-fA-F]{40}$",
-            "description": "Must match the authenticated wallet address"
-          },
-          "proof": {
-            "type": "string",
-            "description": "Base64-encoded PaymentProof JSON"
-          }
+          "walletAddress": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$", "description": "Must match the authenticated wallet address" },
+          "proof": { "type": "string", "description": "Base64-encoded PaymentProof JSON" }
         }
       },
       "PaymentRequired": {
@@ -489,12 +444,7 @@
           "balanceMicroUSDC": { "type": "integer", "description": "uUSDC credits added per payment" },
           "maxAgeSeconds": { "type": "integer", "description": "Payment proof validity window" },
           "description": { "type": "string" },
-          "extensions": {
-            "type": "object",
-            "properties": {
-              "sign-in-with-x": { "$ref": "#/components/schemas/SiwxExtension" }
-            }
-          }
+          "extensions": { "type": "object", "properties": { "sign-in-with-x": { "$ref": "#/components/schemas/SiwxExtension" } } }
         }
       },
       "PaymentProof": {
@@ -525,28 +475,8 @@
         "type": "object",
         "description": "SIWX auth discovery extension included in 402 responses",
         "properties": {
-          "supportedChains": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "chainId": { "type": "string", "example": "eip155:8453" },
-                "type": { "type": "string", "example": "eip191" }
-              }
-            }
-          },
-          "info": {
-            "type": "object",
-            "properties": {
-              "domain": { "type": "string" },
-              "uri": { "type": "string" },
-              "version": { "type": "string" },
-              "statement": { "type": "string" },
-              "nonce": { "type": "string", "description": "One-time nonce for SIWE message construction" },
-              "issuedAt": { "type": "string", "format": "date-time" },
-              "expirationTime": { "type": "string", "format": "date-time" }
-            }
-          }
+          "supportedChains": { "type": "array", "items": { "type": "object", "properties": { "chainId": { "type": "string", "example": "eip155:8453" }, "type": { "type": "string", "example": "eip191" } } } },
+          "info": { "type": "object", "properties": { "domain": { "type": "string" }, "uri": { "type": "string" }, "version": { "type": "string" }, "statement": { "type": "string" }, "nonce": { "type": "string", "description": "One-time nonce for SIWE message construction" }, "issuedAt": { "type": "string", "format": "date-time" }, "expirationTime": { "type": "string", "format": "date-time" } } }
         }
       },
       "BalanceResponse": {
@@ -555,7 +485,27 @@
           "balance": { "type": "integer", "description": "Current credit balance in uUSDC" },
           "totalDepositedMicroUSDC": { "type": "integer" },
           "totalSpentMicroUSDC": { "type": "integer" },
-          "totalRequests": { "type": "integer" }
+          "totalRequests": { "type": "integer" },
+          "totalFailedRequests": { "type": "integer", "description": "Requests where billing was skipped (AI failure, empty response, stream error)" },
+          "provisionalMicroUSDC": { "type": "integer", "description": "Outstanding provisionally credited uUSDC pending RPC re-verification" }
+        }
+      },
+      "AdminWalletStatus": {
+        "type": "object",
+        "description": "Detailed status of a single wallet's Durable Object instance",
+        "properties": {
+          "walletAddress": { "type": "string" },
+          "balance": { "type": "integer", "description": "Current credit balance in uUSDC" },
+          "totalDeposited": { "type": "integer" },
+          "totalSpent": { "type": "integer" },
+          "totalRequests": { "type": "integer" },
+          "totalFailedRequests": { "type": "integer" },
+          "provisionalBalance": { "type": "integer", "description": "Outstanding provisional credits in uUSDC" },
+          "lastUsedAt": { "type": "integer", "nullable": true, "description": "Unix timestamp (ms) of last request, or null if never used" },
+          "historyCount": { "type": "integer", "description": "Number of conversation messages stored" },
+          "pendingCount": { "type": "integer", "description": "Number of pending payment re-verifications" },
+          "nonceCount": { "type": "integer", "description": "Number of active SIWE nonces" },
+          "seenTxCount": { "type": "integer", "description": "Number of replay-prevention entries" }
         }
       },
       "ConversationMessage": {
@@ -563,14 +513,7 @@
         "properties": {
           "role": { "type": "string", "enum": ["user", "assistant"] },
           "content": { "type": "string" },
-          "meta": {
-            "type": "object",
-            "description": "Usage metadata (assistant messages only)",
-            "properties": {
-              "cost": { "type": "number", "description": "uUSDC charged for this response" },
-              "model": { "type": "string", "description": "Workers AI model ID used" }
-            }
-          }
+          "meta": { "type": "object", "description": "Usage metadata (assistant messages only)", "properties": { "cost": { "type": "number", "description": "uUSDC charged for this response" }, "model": { "type": "string", "description": "Workers AI model ID used" } } }
         }
       },
       "PaymentInfo": {

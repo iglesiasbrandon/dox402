@@ -5,29 +5,32 @@ description: Pay-per-use AI inference gateway using x402 payment protocol on Bas
 
 # dox402 -- Pay-Per-Use AI Inference API
 
-Base URL: `https://dox402.iglesias-brandon.workers.dev`
+Base URL: `https://inference-gate.iglesias-brandon.workers.dev`
 
 ## What This Service Does
 
-A payment-gated AI inference API built on Cloudflare Workers and Durable Objects. No signup, no API key -- authenticate with your Ethereum wallet, pay with USDC on Base Mainnet, and get streamed AI responses. Each wallet gets isolated credit balance, conversation history, and rate limiting.
+A payment-gated AI inference API built on Cloudflare Workers and Durable Objects. No signup, no API key -- authenticate with your Ethereum wallet, pay with USDC on Base Mainnet, and get streamed AI responses. Each wallet gets isolated credit balance, conversation history, and rate limiting via per-wallet Durable Objects with embedded SQLite storage.
 
 ## Quick Start
 
 1. **Get a nonce:** `GET /auth/nonce?wallet=0xYOUR_ADDRESS`
 2. **Sign:** Construct an EIP-4361 (SIWE) message with the nonce, sign with `personal_sign`
-3. **Login:** `POST /auth/login` with `{message, signature}` -- receive a Bearer token (24h)
-4. **Check balance:** `GET /balance` with `Authorization: Bearer <token>`
+3. **Login:** `POST /auth/login` with `{message, signature}` -- session cookie set automatically (24h)
+4. **Check balance:** `GET /balance` (cookie-based auth)
 5. **Infer:** `POST /infer` with `{prompt, walletAddress}` -- if balance is 0, you get a 402 with payment instructions
 
 ## Authentication
 
-Two methods:
+Three methods:
 
 **SIWE (recommended for repeated use):**
-Request a nonce, sign an EIP-4361 message, POST to /auth/login, receive a JWT valid for 24 hours.
+Request a nonce, sign an EIP-4361 message, POST to /auth/login. The server sets an HttpOnly `ig_session` cookie valid for 24 hours. All subsequent requests are authenticated via this cookie automatically.
 
 **SIWX (single-request, for x402 clients):**
-Include a `SIGN-IN-WITH-X` header with a base64-encoded payload containing {message, signature, chainId, type, address}. The server returns a session token in the `X-Session-Token` response header for subsequent requests.
+Include a `SIGN-IN-WITH-X` header with a base64-encoded payload containing {message, signature, chainId, type, address}. The server returns a session cookie in the `Set-Cookie` header for subsequent requests.
+
+**Cookie-based sessions:**
+After login via either method, all authenticated endpoints use the `ig_session` HttpOnly cookie. No Bearer token or Authorization header needed.
 
 ## Endpoints
 
@@ -36,12 +39,24 @@ Include a `SIGN-IN-WITH-X` header with a base64-encoded payload containing {mess
 | GET | /health | None | Liveness probe |
 | GET | /payment-info | None | Payment address, network, USDC contract |
 | GET | /auth/nonce | None | Generate one-time nonce (query: `wallet`) |
-| POST | /auth/login | None | Verify SIWE signature, issue JWT |
-| POST | /infer | Bearer/SIWX | AI inference (SSE stream) |
-| POST | /deposit | Bearer | Top up balance with payment proof |
-| GET | /balance | Bearer | Credit balance and usage stats |
-| GET | /history | Bearer | Conversation messages |
-| DELETE | /history | Bearer | Clear conversation |
+| POST | /auth/login | None | Verify SIWE signature, set session cookie |
+| POST | /auth/logout | Cookie | Clear session cookie |
+| POST | /infer | Cookie/SIWX | AI inference (SSE stream) |
+| POST | /deposit | Cookie | Top up balance with payment proof |
+| GET | /balance | Cookie | Credit balance and usage stats |
+| GET | /history | Cookie | Conversation messages |
+| DELETE | /history | Cookie | Clear conversation |
+
+### Admin Endpoints
+
+All admin endpoints require `Authorization: Bearer <ADMIN_SECRET>`.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | /admin/wallets | Admin | Paginated list of registered wallets (`?limit=&cursor=`) |
+| GET | /admin/wallets/:wallet/status | Admin | Detailed DO status for a specific wallet |
+| GET | /admin/stats | Admin | Total registered wallet count |
+| GET | /admin/stale | Admin | Find zero-balance inactive wallets (`?inactive_days=30&max_balance=0&limit=50`) |
 
 ## Models
 
@@ -67,6 +82,8 @@ Default model: `@cf/meta/llama-3.1-8b-instruct`
 
 The signature is `personal_sign` over: `dox402 payment proof\ntxHash: ...\nfrom: ...\namount: ...\ntimestamp: ...`
 
+**Grace mode:** If the Base RPC is unreachable during payment verification, the server grants provisional credit that is automatically re-verified via a background alarm. The `X-Payment-Status: provisional` header indicates grace mode was used.
+
 ## Rate Limiting
 
 60 requests per minute per wallet. Exceeding returns 429 with `Retry-After` header.
@@ -75,24 +92,25 @@ The signature is `personal_sign` over: `dox402 payment proof\ntxHash: ...\nfrom:
 
 ```bash
 # 1. Get nonce
-NONCE=$(curl -s 'https://dox402.iglesias-brandon.workers.dev/auth/nonce?wallet=0xYOUR_WALLET' | jq -r .nonce)
+NONCE=$(curl -s 'https://inference-gate.iglesias-brandon.workers.dev/auth/nonce?wallet=0xYOUR_WALLET' | jq -r .nonce)
 
 # 2. Sign the SIWE message with your wallet (app-specific)
 
-# 3. Login
-TOKEN=$(curl -s -X POST https://dox402.iglesias-brandon.workers.dev/auth/login \
+# 3. Login (cookie is set automatically via Set-Cookie header)
+curl -s -c cookies.txt -X POST https://inference-gate.iglesias-brandon.workers.dev/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"message":"...signed SIWE message...","signature":"0x..."}' | jq -r .token)
+  -d '{"message":"...signed SIWE message...","signature":"0x..."}'
 
 # 4. Check balance
-curl -s https://dox402.iglesias-brandon.workers.dev/balance \
-  -H "Authorization: Bearer $TOKEN"
+curl -s -b cookies.txt https://inference-gate.iglesias-brandon.workers.dev/balance
 
-# 5. Run inference
-curl -N -X POST https://dox402.iglesias-brandon.workers.dev/infer \
-  -H "Authorization: Bearer $TOKEN" \
+# 5. Run inference (streamed SSE response)
+curl -N -b cookies.txt -X POST https://inference-gate.iglesias-brandon.workers.dev/infer \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"Explain x402 in one sentence","walletAddress":"0xYOUR_WALLET"}'
+
+# 6. Logout
+curl -s -b cookies.txt -X POST https://inference-gate.iglesias-brandon.workers.dev/auth/logout
 ```
 
 ## Machine-Readable Specs
