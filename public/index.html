@@ -487,14 +487,14 @@
           Most payment-gated APIs bolt a database onto a stateless server — Postgres for balances, Redis for rate-limiting, a separate auth layer for identity. Durable Objects collapse all of that into a single primitive.
         </p>
         <p style="font-size:13px;color:var(--muted);line-height:1.65;margin:0">
-          Each wallet is routed to its own DO instance via <a href="https://developers.cloudflare.com/durable-objects/api/namespace/" target="_blank"><code>idFromName</code></a>. The Worker calls typed <a href="https://developers.cloudflare.com/durable-objects/api/rpc/" target="_blank">RPC methods</a> directly on the stub — no HTTP routing inside the DO, just plain function calls with full type safety. On activation, <a href="https://developers.cloudflare.com/durable-objects/api/base/#blockconcurrencywhile" target="_blank"><code>blockConcurrencyWhile()</code></a> in the constructor loads the wallet address from storage once, before any request is served — eliminating per-request persistence overhead. Each instance owns its µUSDC balance exclusively — no shared state, no contention, no double-spend. Replay prevention uses <a href="https://developers.cloudflare.com/durable-objects/api/transactional-storage-api/" target="_blank"><code>storage.transaction()</code></a> to atomically check a <code>seen:{txHash}</code> key and top up the balance in one operation, at the edge, with no external infrastructure. The DO <a href="https://developers.cloudflare.com/durable-objects/api/alarms/" target="_blank">alarm</a> runs TTL-based cleanup — purging <code>seen:</code> keys after one hour (well beyond the 5-minute proof window) and terminal <code>pending:</code> entries after 24 hours, preventing unbounded storage growth.
+          Each wallet is routed to its own DO instance via <a href="https://developers.cloudflare.com/durable-objects/api/namespace/" target="_blank"><code>idFromName</code></a>. The Worker calls typed <a href="https://developers.cloudflare.com/durable-objects/api/rpc/" target="_blank">RPC methods</a> directly on the stub — no HTTP routing inside the DO, just plain function calls with full type safety. On activation, <a href="https://developers.cloudflare.com/durable-objects/api/base/#blockconcurrencywhile" target="_blank"><code>blockConcurrencyWhile()</code></a> in the constructor loads the wallet state from embedded SQLite once, before any request is served — eliminating per-request persistence overhead. Each instance owns its µUSDC balance exclusively — no shared state, no contention, no double-spend. Replay prevention uses a <code>seen_transactions</code> SQL table to atomically check tx hashes and top up the balance, at the edge, with no external infrastructure. The DO <a href="https://developers.cloudflare.com/durable-objects/api/alarms/" target="_blank">alarm</a> handles grace-mode re-verification of provisional deposits when the Base RPC is unreachable, and runs TTL-based cleanup of expired records.
         </p>
       </div>
 
       <div class="readme-section">
         <div class="readme-h">Conversation memory</div>
         <p style="font-size:13px;color:var(--muted);line-height:1.65;margin:0">
-          Each wallet's DO instance stores the conversation as a <code>history</code> key. On every request, the full message array is sent to the model — so follow-up questions and multi-turn reasoning work without the client managing any state. The reply is captured and saved via <a href="https://developers.cloudflare.com/workers/runtime-apis/context/#waituntil" target="_blank"><code>ctx.waitUntil()</code></a> after the stream, adding zero latency. Each assistant message stores usage metadata (cost, model) so details persist across reloads. History is capped at 20 messages and tied to the wallet, not the browser.
+          Each wallet's DO instance stores the conversation in an embedded SQLite <code>history</code> table. On every request, the full message array is sent to the model — so follow-up questions and multi-turn reasoning work without the client managing any state. The reply is captured and saved via <a href="https://developers.cloudflare.com/workers/runtime-apis/context/#waituntil" target="_blank"><code>ctx.waitUntil()</code></a> after the stream, adding zero latency. Each assistant message stores usage metadata (cost, model) so details persist across reloads. History is capped at 20 messages and tied to the wallet, not the browser.
         </p>
       </div>
 
@@ -513,9 +513,9 @@ sequenceDiagram
     C->>W: POST /auth/login {message, sig}
     W->>W: recover address (EIP-191)
     W->>DO: RPC handleVerifyNonce(nonce)
-    W-->>C: { token, expiresAt }
-    C->>W: POST /infer + Bearer token
-    W->>W: verify HMAC session
+    W-->>C: Set-Cookie: ig_session + { expiresAt }
+    C->>W: POST /infer + cookie
+    W->>W: verify session cookie
     W->>DO: RPC handleInfer(body, wallet)
     Note over DO,S: blockConcurrencyWhile() loads wallet on activation
     DO->>S: get balance + history
@@ -536,15 +536,22 @@ GET    /payment-info  payment address + network details
 
 <strong>Auth (SIWE / SIWX)</strong>
 GET    /auth/nonce    generate one-time nonce
-POST   /auth/login    verify signature → JWT (SIWE)
+POST   /auth/login    verify signature → session cookie (SIWE)
+POST   /auth/logout   clear session cookie
        SIGN-IN-WITH-X header for single-request auth (SIWX)
 
-<strong>Authenticated (Bearer or SIWX)</strong>
+<strong>Authenticated (Cookie or SIWX)</strong>
 POST   /infer     run inference (post-billed)
 POST   /deposit   top-up balance without inference
 GET    /balance   credit balance + usage stats
 GET    /history   conversation messages + meta
-DELETE /history   clear conversation</pre>
+DELETE /history   clear conversation
+
+<strong>Admin (Bearer ADMIN_SECRET)</strong>
+GET    /admin/wallets              paginated wallet list
+GET    /admin/wallets/:addr/status detailed DO status
+GET    /admin/stats                total wallet count
+GET    /admin/stale                find inactive wallets</pre>
       </div>
 
       <div class="readme-section">
