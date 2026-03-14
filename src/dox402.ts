@@ -8,7 +8,7 @@ import {
   STREAM_HEARTBEAT_MS, STREAM_MAX_DURATION_MS,
 } from './constants';
 import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billing';
-import { ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce } from './types';
+import { AdminWalletStatus, ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce, WalletRegistryEntry } from './types';
 import { MIGRATIONS } from './migrations';
 
 export class InferenceGate extends DurableObject<Env> {
@@ -194,6 +194,7 @@ export class InferenceGate extends DurableObject<Env> {
     if (!this.wallet) {
       this.wallet = wallet;
       this.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', wallet);
+      this.registerInKV(wallet);
     }
 
     const limited = this.checkRateLimit();
@@ -495,6 +496,7 @@ export class InferenceGate extends DurableObject<Env> {
     if (!this.wallet) {
       this.wallet = wallet;
       this.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', wallet);
+      this.registerInKV(wallet);
     }
 
     const limited = this.checkRateLimit();
@@ -646,6 +648,67 @@ export class InferenceGate extends DurableObject<Env> {
     return new Response(
       JSON.stringify({ ok: true }),
       { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
+    );
+  }
+
+  // ── Admin: detailed status (not rate-limited — behind admin auth at router) ─
+
+  async handleAdminStatus(): Promise<Response> {
+    const row = this.sql.exec<{
+      wallet_address: string;
+      balance: number;
+      total_deposited: number;
+      total_spent: number;
+      total_requests: number;
+      total_failed_requests: number;
+      provisional_balance: number;
+      last_used_at: number | null;
+    }>(`SELECT wallet_address, balance, total_deposited, total_spent,
+        total_requests, total_failed_requests, provisional_balance, last_used_at
+        FROM wallet_state WHERE id = 1`).toArray()[0]!;
+
+    const historyCount = this.sql.exec<{ cnt: number }>(
+      'SELECT COUNT(*) as cnt FROM history',
+    ).toArray()[0]!.cnt;
+
+    const pendingCount = this.sql.exec<{ cnt: number }>(
+      `SELECT COUNT(*) as cnt FROM pending_verifications WHERE status = 'pending'`,
+    ).toArray()[0]!.cnt;
+
+    const nonceCount = this.sql.exec<{ cnt: number }>(
+      'SELECT COUNT(*) as cnt FROM nonces',
+    ).toArray()[0]!.cnt;
+
+    const seenTxCount = this.sql.exec<{ cnt: number }>(
+      'SELECT COUNT(*) as cnt FROM seen_transactions',
+    ).toArray()[0]!.cnt;
+
+    const status: AdminWalletStatus = {
+      walletAddress:      row.wallet_address,
+      balance:            row.balance,
+      totalDeposited:     row.total_deposited,
+      totalSpent:         row.total_spent,
+      totalRequests:      row.total_requests,
+      totalFailedRequests: row.total_failed_requests,
+      provisionalBalance: row.provisional_balance,
+      lastUsedAt:         row.last_used_at,
+      historyCount,
+      pendingCount,
+      nonceCount,
+      seenTxCount,
+    };
+
+    return Response.json(status, { headers: { 'Cache-Control': 'no-store' } });
+  }
+
+  // ── Wallet KV registry ────────────────────────────────────────────────────
+
+  /** Fire-and-forget registration in the global wallet KV index */
+  private registerInKV(wallet: string): void {
+    const entry: WalletRegistryEntry = { registeredAt: Date.now() };
+    this.ctx.waitUntil(
+      this.env.WALLET_REGISTRY.put(wallet, JSON.stringify(entry))
+        .catch(err => console.error('[dox402] KV registry put failed:', err)),
     );
   }
 

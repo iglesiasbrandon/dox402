@@ -132,6 +132,14 @@ function makeTestDO(opts?: { aiStream?: ReadableStream }) {
     blockConcurrencyWhile: vi.fn(async (cb: () => Promise<void>) => { await cb(); }),
   };
 
+  const mockKV = {
+    get: vi.fn(async () => null),
+    put: vi.fn(async () => {}),
+    delete: vi.fn(async () => {}),
+    list: vi.fn(async () => ({ keys: [], list_complete: true, cursor: '' })),
+    getWithMetadata: vi.fn(async () => ({ value: null, metadata: null })),
+  };
+
   const env: Env = {
     DOX402: {} as any,
     AI: mockAI as any,
@@ -139,10 +147,11 @@ function makeTestDO(opts?: { aiStream?: ReadableStream }) {
     BASE_RPC_URL: 'https://mainnet.base.org',
     NETWORK: 'base-mainnet',
     SESSION_SECRET: 'test-secret',
+    WALLET_REGISTRY: mockKV as any,
   };
 
   const gate = new InferenceGate(ctx as any, env as any);
-  return { gate, storage, waitUntilPromises, mockAI };
+  return { gate, storage, waitUntilPromises, mockAI, mockKV };
 }
 
 async function drainStream(response: Response): Promise<string> {
@@ -805,5 +814,134 @@ describe('InferenceGate — storage cleanup', () => {
       'SELECT tx_hash FROM pending_verifications',
     ).toArray();
     expect(remaining.length).toBe(1);
+  });
+});
+
+// ── Admin status ──────────────────────────────────────────────────────────────
+
+describe('InferenceGate — handleAdminStatus', () => {
+
+  it('returns all wallet status fields', async () => {
+    const { gate, storage } = makeTestDO();
+    storage.sql.exec(
+      `UPDATE wallet_state SET
+        wallet_address = '0xtest', balance = 5000, total_deposited = 10000,
+        total_spent = 5000, total_requests = 42, total_failed_requests = 3,
+        provisional_balance = 1000, last_used_at = 1700000000000
+      WHERE id = 1`,
+    );
+
+    const res = await gate.handleAdminStatus();
+    expect(res.status).toBe(200);
+
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.walletAddress).toBe('0xtest');
+    expect(body.balance).toBe(5000);
+    expect(body.totalDeposited).toBe(10000);
+    expect(body.totalSpent).toBe(5000);
+    expect(body.totalRequests).toBe(42);
+    expect(body.totalFailedRequests).toBe(3);
+    expect(body.provisionalBalance).toBe(1000);
+    expect(body.lastUsedAt).toBe(1700000000000);
+    expect(body.historyCount).toBe(0);
+    expect(body.pendingCount).toBe(0);
+    expect(body.nonceCount).toBe(0);
+    expect(body.seenTxCount).toBe(0);
+  });
+
+  it('counts history, pending, nonce, and seen_tx rows', async () => {
+    const { gate, storage } = makeTestDO();
+    storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
+
+    // Insert some history rows
+    storage.sql.exec(
+      'INSERT INTO history (role, content, created_at) VALUES (?, ?, ?)',
+      'user', 'hello', Date.now(),
+    );
+    storage.sql.exec(
+      'INSERT INTO history (role, content, cost, model, created_at) VALUES (?, ?, ?, ?, ?)',
+      'assistant', 'world', 100, 'test-model', Date.now() + 1,
+    );
+
+    // Insert a pending verification
+    const proof = { txHash: '0x' + 'a'.repeat(64), from: '0xtest', amount: '1000', timestamp: 0, signature: '0xsig' };
+    storage.sql.exec(
+      `INSERT INTO pending_verifications (tx_hash, proof_json, credited_amount, created_at, retry_count, status)
+       VALUES (?, ?, 1000, ?, 0, 'pending')`,
+      '0x' + 'a'.repeat(64), JSON.stringify(proof), Date.now(),
+    );
+
+    // Insert a nonce
+    storage.sql.exec('INSERT INTO nonces (nonce, created_at) VALUES (?, ?)', 'testnonce', Date.now());
+
+    // Insert a seen transaction
+    storage.sql.exec(
+      'INSERT INTO seen_transactions (tx_hash, created_at) VALUES (?, ?)',
+      '0x' + 'b'.repeat(64), Date.now(),
+    );
+
+    const res = await gate.handleAdminStatus();
+    const body = await res.json() as Record<string, unknown>;
+
+    expect(body.historyCount).toBe(2);
+    expect(body.pendingCount).toBe(1);
+    expect(body.nonceCount).toBe(1);
+    expect(body.seenTxCount).toBe(1);
+  });
+
+  it('is not rate-limited (admin bypass)', async () => {
+    const { gate, storage } = makeTestDO();
+    storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
+
+    // Fill up the rate limit window
+    const now = Math.floor(Date.now() / 1000);
+    const windowStart = now - (now % 60);
+    storage.sql.exec(
+      'INSERT INTO rate_limits (window_start, count) VALUES (?, 999)',
+      windowStart,
+    );
+
+    // handleAdminStatus should still work (no rate limit check)
+    const res = await gate.handleAdminStatus();
+    expect(res.status).toBe(200);
+  });
+});
+
+// ── KV registration ──────────────────────────────────────────────────────────
+
+describe('InferenceGate — KV wallet registration', () => {
+
+  it('registers wallet in KV on first handleInfer call', async () => {
+    const { gate, storage, waitUntilPromises, mockKV } = makeTestDO();
+    setBalance(storage, 1000);
+
+    const response = await callInfer(gate);
+    await drainStream(response);
+    await Promise.allSettled(waitUntilPromises);
+
+    expect(mockKV.put).toHaveBeenCalledOnce();
+    expect(mockKV.put).toHaveBeenCalledWith(
+      TEST_WALLET,
+      expect.stringContaining('"registeredAt"'),
+    );
+  });
+
+  it('does NOT re-register on subsequent handleInfer calls', async () => {
+    const { gate, storage, waitUntilPromises, mockKV } = makeTestDO();
+    setBalance(storage, 2000);
+
+    // First call — should register
+    const res1 = await callInfer(gate);
+    await drainStream(res1);
+    await Promise.allSettled(waitUntilPromises);
+    expect(mockKV.put).toHaveBeenCalledOnce();
+
+    mockKV.put.mockClear();
+
+    // Second call — wallet already set, should NOT register again
+    const res2 = await callInfer(gate, 'second prompt');
+    await drainStream(res2);
+    await Promise.allSettled(waitUntilPromises);
+    expect(mockKV.put).not.toHaveBeenCalled();
   });
 });

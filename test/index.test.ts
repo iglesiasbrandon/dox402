@@ -14,6 +14,20 @@ import type { Env } from '../src/types';
 
 const SESSION_SECRET = 'test-secret-for-integration-tests';
 
+function makeMockKVNamespace(): KVNamespace {
+  const store = new Map<string, string>();
+  return {
+    get: vi.fn(async (key: string) => store.get(key) ?? null),
+    put: vi.fn(async (key: string, value: string) => { store.set(key, value); }),
+    delete: vi.fn(async (key: string) => { store.delete(key); }),
+    list: vi.fn(async (opts?: { limit?: number; cursor?: string }) => {
+      const keys = Array.from(store.keys()).map(name => ({ name }));
+      return { keys, list_complete: true, cursor: '' };
+    }),
+    getWithMetadata: vi.fn(async () => ({ value: null, metadata: null })),
+  } as unknown as KVNamespace;
+}
+
 function makeEnv(overrides?: Partial<Env>): Env {
   return {
     DOX402: {} as any,
@@ -22,6 +36,7 @@ function makeEnv(overrides?: Partial<Env>): Env {
     BASE_RPC_URL: 'https://mainnet.base.org',
     NETWORK: 'base-mainnet',
     SESSION_SECRET,
+    WALLET_REGISTRY: makeMockKVNamespace(),
     ...overrides,
   };
 }

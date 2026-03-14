@@ -1,9 +1,10 @@
 import { InferenceGate } from './dox402';
-import { Env, InferRequest, DepositRequest } from './types';
+import { Env, InferRequest, DepositRequest, AdminWalletStatus, WalletRegistryEntry } from './types';
 import { USDC_CONTRACT } from './constants';
 import { verifySiweLogin } from './siwe';
 import { createSessionToken, verifySessionToken, TOKEN_EXPIRY_SECS, buildSessionCookie, buildClearCookie, parseCookieToken } from './session';
 import { parseSiwxHeader, verifySiwxPayload, buildSiwxExtension } from './siwx';
+import { isAdmin, adminUnauthorized, adminDisabled } from './admin';
 
 // Re-export the DO class so Cloudflare can find it
 export { InferenceGate };
@@ -205,6 +206,113 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
       return Response.json({ ok: true }, {
         headers: { 'Set-Cookie': cookie, 'Cache-Control': 'no-store' },
       });
+    }
+
+    // ── Admin endpoints ───────────────────────────────────────────────────
+
+    // GET /admin/wallets — paginated wallet list from KV registry
+    if (url.pathname === '/admin/wallets' && request.method === 'GET') {
+      if (!env.ADMIN_SECRET) return adminDisabled();
+      if (!isAdmin(request, env)) return adminUnauthorized();
+
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') ?? '100', 10) || 100, 1), 1000);
+      const cursor = url.searchParams.get('cursor') ?? undefined;
+
+      const list = await env.WALLET_REGISTRY.list({ limit, cursor });
+      const wallets = list.keys.map(k => ({
+        wallet: k.name,
+        ...(k.metadata ? { metadata: k.metadata } : {}),
+      }));
+
+      return Response.json({
+        wallets,
+        cursor: list.list_complete ? null : list.cursor,
+        hasMore: !list.list_complete,
+      }, { headers: { 'Cache-Control': 'no-store' } });
+    }
+
+    // GET /admin/wallets/:wallet/status — detailed DO status for a specific wallet
+    if (url.pathname.startsWith('/admin/wallets/') && url.pathname.endsWith('/status') && request.method === 'GET') {
+      if (!env.ADMIN_SECRET) return adminDisabled();
+      if (!isAdmin(request, env)) return adminUnauthorized();
+
+      // Extract wallet from /admin/wallets/0x.../status
+      const parts = url.pathname.split('/');
+      const wallet = parts[3]; // ['', 'admin', 'wallets', '0x...', 'status']
+      if (!wallet || !WALLET_REGEX.test(wallet)) return invalidWallet();
+
+      const stub = getTypedStub(env, wallet);
+      return stub.handleAdminStatus();
+    }
+
+    // GET /admin/stats — aggregate statistics (total registered wallets)
+    if (url.pathname === '/admin/stats' && request.method === 'GET') {
+      if (!env.ADMIN_SECRET) return adminDisabled();
+      if (!isAdmin(request, env)) return adminUnauthorized();
+
+      // Count all keys by iterating with cursor (KV has no native count API)
+      let total = 0;
+      let cursor: string | undefined;
+      do {
+        const list = await env.WALLET_REGISTRY.list({ limit: 1000, cursor });
+        total += list.keys.length;
+        cursor = list.list_complete ? undefined : list.cursor;
+      } while (cursor);
+
+      return Response.json({ totalWallets: total }, { headers: { 'Cache-Control': 'no-store' } });
+    }
+
+    // GET /admin/stale — identify zero-balance inactive wallets
+    if (url.pathname === '/admin/stale' && request.method === 'GET') {
+      if (!env.ADMIN_SECRET) return adminDisabled();
+      if (!isAdmin(request, env)) return adminUnauthorized();
+
+      const inactiveDays = Math.max(parseInt(url.searchParams.get('inactive_days') ?? '30', 10) || 30, 1);
+      const maxBalance = Math.max(parseInt(url.searchParams.get('max_balance') ?? '0', 10) || 0, 0);
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') ?? '50', 10) || 50, 1), 200);
+      const cutoffMs = Date.now() - inactiveDays * 86_400_000;
+
+      // Collect all registered wallets from KV
+      const allWallets: string[] = [];
+      let kvCursor: string | undefined;
+      do {
+        const list = await env.WALLET_REGISTRY.list({ limit: 1000, cursor: kvCursor });
+        for (const key of list.keys) allWallets.push(key.name);
+        kvCursor = list.list_complete ? undefined : list.cursor;
+      } while (kvCursor);
+
+      // Fan-out to DOs in bounded batches to avoid overwhelming the runtime
+      const BATCH_SIZE = 10;
+      const stale: AdminWalletStatus[] = [];
+
+      for (let i = 0; i < allWallets.length && stale.length < limit; i += BATCH_SIZE) {
+        const batch = allWallets.slice(i, i + BATCH_SIZE);
+        const results = await Promise.allSettled(
+          batch.map(async (w) => {
+            const stub = getTypedStub(env, w);
+            const res = await stub.handleAdminStatus();
+            return res.json<AdminWalletStatus>();
+          }),
+        );
+
+        for (const result of results) {
+          if (result.status !== 'fulfilled') continue;
+          const status = result.value;
+          if (
+            status.balance <= maxBalance &&
+            (status.lastUsedAt === null || status.lastUsedAt < cutoffMs)
+          ) {
+            stale.push(status);
+            if (stale.length >= limit) break;
+          }
+        }
+      }
+
+      return Response.json({
+        stale,
+        count: stale.length,
+        criteria: { inactiveDays, maxBalance, limit },
+      }, { headers: { 'Cache-Control': 'no-store' } });
     }
 
     // ── Authenticated endpoints ──────────────────────────────────────────

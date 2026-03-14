@@ -95,6 +95,27 @@ export interface PendingVerification {
   lastError?: string;           // most recent RPC error message
 }
 
+// Admin status response from a single DO instance
+export interface AdminWalletStatus {
+  walletAddress: string;
+  balance: number;
+  totalDeposited: number;
+  totalSpent: number;
+  totalRequests: number;
+  totalFailedRequests: number;
+  provisionalBalance: number;
+  lastUsedAt: number | null;
+  historyCount: number;
+  pendingCount: number;
+  nonceCount: number;
+  seenTxCount: number;
+}
+
+// KV registry metadata stored per wallet
+export interface WalletRegistryEntry {
+  registeredAt: number;
+}
+
 // Env bindings (matches wrangler.toml)
 export interface Env {
   DOX402: DurableObjectNamespace;
@@ -105,4 +126,6 @@ export interface Env {
   MOCK_PAYMENTS?: string;       // set to "true" in local dev only — skips Tier 2 RPC check
   MOCK_AI_BEHAVIOR?: string;    // local dev only: success | empty | error | stream_error
   SESSION_SECRET: string;       // HMAC-SHA256 key for SIWE session tokens (set via wrangler secret put)
+  WALLET_REGISTRY: KVNamespace; // global wallet registry for admin tooling
+  ADMIN_SECRET?: string;        // admin Bearer token (set via wrangler secret put)
 }
