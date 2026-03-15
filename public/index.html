@@ -470,10 +470,8 @@
     .doc-empty { font-size: 12px; color: var(--muted); text-align: center; padding: 20px 0; }
     .doc-upload-form { display: flex; flex-direction: column; gap: 8px; }
     .doc-upload-form input[type="text"] { padding: 8px 10px; font-size: 13px; }
-    .doc-upload-form textarea { min-height: 60px; font-size: 12px; }
     .doc-file-row { display: flex; align-items: center; gap: 8px; }
     .doc-file-input { font-size: 12px; color: var(--muted); }
-    .doc-file-or { font-size: 10px; color: var(--muted); text-align: center; }
     .doc-upload-btn {
       background: var(--accent); color: #181818;
       padding: 8px 16px; font-size: 13px; font-weight: 600;
@@ -770,7 +768,7 @@ GET    /admin/stale                find inactive wallets</pre>
     <div class="card">
       <div class="tab-row">
         <button class="tab-btn active" id="tabPrompt" onclick="switchTab('prompt')">Prompt</button>
-        <button class="tab-btn" id="tabDocs" onclick="switchTab('docs')">📄 Documents <span id="docCount">(0)</span></button>
+        <button class="tab-btn" id="tabDocs" onclick="switchTab('docs')">📄 Files <span id="docCount">(0)</span></button>
       </div>
 
       <!-- Prompt panel -->
@@ -804,29 +802,32 @@ GET    /admin/stale                find inactive wallets</pre>
         <button class="btn-primary" id="sendBtn">Send →</button>
       </div>
 
-      <!-- Documents panel -->
+      <!-- Files panel -->
       <div class="docs-panel" id="docsPanel">
-        <div id="docList" class="doc-list">
-          <div class="doc-empty" id="docEmpty">No documents uploaded yet.</div>
+        <div id="docAuthGate" style="font-size:12px;color:var(--muted);text-align:center;padding:24px 0">
+          Connect your wallet to upload and manage files.
         </div>
-        <hr class="divider" />
-        <div class="doc-upload-form">
-          <input type="text" id="docTitle" placeholder="Document title" maxlength="200" />
-          <div class="doc-file-row">
-            <input type="file" id="docFileInput" class="doc-file-input" accept=".txt,.md,.csv,.json,.html" />
+        <div id="docAuthContent" style="display:none">
+          <div id="docList" class="doc-list">
+            <div class="doc-empty" id="docEmpty">No files uploaded yet.</div>
           </div>
-          <div class="doc-file-or">— or paste text below —</div>
-          <textarea id="docContent" placeholder="Paste document text here…" rows="4"></textarea>
-          <div style="display:flex;align-items:center;justify-content:space-between">
-            <span id="docUploadStatus"></span>
-            <button class="doc-upload-btn" id="docUploadBtn" onclick="uploadDocument()">Upload →</button>
+          <hr class="divider" />
+          <div class="doc-upload-form">
+            <input type="text" id="docTitle" placeholder="File title" maxlength="200" />
+            <div class="doc-file-row">
+              <input type="file" id="docFileInput" class="doc-file-input" accept=".txt,.md,.csv,.json,.html" />
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <span id="docUploadStatus"></span>
+              <button class="doc-upload-btn" id="docUploadBtn" onclick="uploadDocument()">Upload →</button>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Conversation -->
-    <div class="card response-card" id="respCard">
+    <!-- Conversation (hidden until there's actual history) -->
+    <div class="card response-card" id="respCard" style="display:none">
       <div class="response-header">
         <div class="resp-label">
           <span class="status-dot" id="dot"></span>
@@ -837,9 +838,7 @@ GET    /admin/stale                find inactive wallets</pre>
           <button class="btn-ghost" id="clearHistoryBtn">Clear</button>
         </div>
       </div>
-      <div class="convo-thread" id="convoThread">
-        <div class="convo-empty" id="convoEmpty">No messages yet. Ask anything to begin.</div>
-      </div>
+      <div class="convo-thread" id="convoThread"></div>
     </div>
 
   </div><!-- end right-panel -->
@@ -1035,10 +1034,20 @@ GET    /admin/stale                find inactive wallets</pre>
     document.getElementById('estRow').style.display = 'none';
     document.getElementById('estCard').style.display = 'none';
     estOpen = false;
+    // Reset and hide conversation history
     const thread = document.getElementById('convoThread');
-    thread.innerHTML = '<div class="convo-empty" id="convoEmpty">No messages yet. Ask anything to begin.</div>';
+    thread.innerHTML = '';
     document.getElementById('statusTxt').textContent = 'Conversation History';
     document.getElementById('dot').classList.remove('live');
+    document.getElementById('respCard').style.display = 'none';
+    // Reset files panel to auth gate
+    document.getElementById('docAuthGate').style.display = 'block';
+    document.getElementById('docAuthContent').style.display = 'none';
+    documentCount = 0;
+    document.getElementById('docCount').textContent = '(0)';
+    updateRagToggle();
+    // Switch back to prompt tab
+    switchTab('prompt');
   }
 
   function showConnected(addr) {
@@ -1047,6 +1056,9 @@ GET    /admin/stale                find inactive wallets</pre>
     document.getElementById('walletDisconnected').style.display = 'none';
     document.getElementById('pill').style.display = 'flex';
     document.getElementById('estRow').style.display = 'flex';
+    // Show files content, hide auth gate
+    document.getElementById('docAuthGate').style.display = 'none';
+    document.getElementById('docAuthContent').style.display = 'block';
     updateEstimate();
   }
 
@@ -1108,14 +1120,17 @@ GET    /admin/stale                find inactive wallets</pre>
     const prompt      = document.getElementById('promptIn').value;
     const promptChars = countChars(prompt);
     const histChars   = getHistoryChars();
-    const totalChars  = promptChars + histChars;
     const histMsgs    = document.querySelectorAll('.msg').length;
 
-    // Live counter text (chars)
-    const label = histMsgs > 0
-      ? `~${totalChars.toLocaleString()} chars input (prompt + ${histMsgs} history msg${histMsgs !== 1 ? 's' : ''})`
-      : `~${totalChars.toLocaleString()} chars input`;
-    document.getElementById('estTokens').textContent = label;
+    const ragOn = document.getElementById('ragToggle')?.checked;
+    const ragChars = ragOn ? 8000 : 0; // ~2,000 tokens × 4 chars/token estimated RAG context
+    const totalChars  = promptChars + histChars + ragChars;
+
+    // Live counter text (separate line items)
+    const parts = [`~${promptChars.toLocaleString()} prompt`];
+    if (histMsgs > 0) parts.push(`${histChars.toLocaleString()} history`);
+    if (ragOn) parts.push('~8,000 files (RAG)');
+    document.getElementById('estTokens').textContent = parts.join(' · ') + ' chars';
 
     // Credit calculation: chars ÷ 4 ≈ tokens for neuron rate lookup
     const totalInToks = Math.ceil(totalChars / 4);
@@ -1129,24 +1144,26 @@ GET    /admin/stale                find inactive wallets</pre>
     const costMinCr   = Math.max(1, Math.ceil((neuronsMin * 0.011 + OVERHEAD) / (1 - MARGIN)));
     const costMaxCr   = Math.max(1, Math.ceil((neuronsMax * 0.011 + OVERHEAD) / (1 - MARGIN)));
 
-    const ragOn = document.getElementById('ragToggle')?.checked;
-    let ragNote = '';
-    if (ragOn) {
-      ragNote = '<div style="color:var(--accent);font-size:11px;margin-top:4px">+ ~2,000 context tokens (estimated RAG)</div>';
-    }
-
     // Estimate card body (only if open)
     if (!estOpen) return;
 
+    let rows = '';
+    rows += `<span style="color:var(--muted)">Prompt</span> <span style="color:var(--text)">${escapeHtml(promptChars.toLocaleString())} chars</span>`;
+    if (histMsgs > 0) {
+      rows += `<span style="color:var(--muted)">History (${histMsgs} msg${histMsgs !== 1 ? 's' : ''})</span> <span style="color:var(--text)">${escapeHtml(histChars.toLocaleString())} chars</span>`;
+    }
+    if (ragOn) {
+      rows += `<span style="color:var(--accent)">Files (RAG context)</span> <span style="color:var(--accent)">~8,000 chars</span>`;
+    }
+    rows += `<span style="color:var(--border);grid-column:1/-1;border-top:1px solid var(--border);margin:4px 0"></span>`;
+    rows += `<span style="color:var(--muted)">Total input</span> <span style="color:var(--text);font-weight:600">~${escapeHtml(totalChars.toLocaleString())} chars</span>`;
+    rows += `<span style="color:var(--muted)">Output (estimated)</span> <span style="color:var(--muted)">${escapeHtml((outMinToks*4).toLocaleString())}–${escapeHtml((outMaxToks*4).toLocaleString())} chars</span>`;
+    rows += `<span style="color:var(--muted)">Credits</span> <span style="color:var(--accent)">~${escapeHtml(costMinCr === costMaxCr ? String(costMinCr) : costMinCr + '–' + costMaxCr)}</span>`;
+
     document.getElementById('estBody').innerHTML = `
       <div style="display:grid;grid-template-columns:1fr auto;gap:4px 24px;align-items:baseline">
-        <span style="color:var(--muted)">Prompt</span>             <span style="color:var(--text)">${escapeHtml(promptChars.toLocaleString())} chars</span>
-        <span style="color:var(--muted)">History</span>            <span style="color:var(--text)">${escapeHtml(histChars.toLocaleString())} chars</span>
-        <span style="color:var(--muted)">Total input</span>        <span style="color:var(--text);font-weight:600">~${escapeHtml(totalChars.toLocaleString())} chars</span>
-        <span style="color:var(--border);grid-column:1/-1;border-top:1px solid var(--border);margin:4px 0"></span>
-        <span style="color:var(--muted)">Output (estimated)</span> <span style="color:var(--muted)">${escapeHtml((outMinToks*4).toLocaleString())}–${escapeHtml((outMaxToks*4).toLocaleString())} chars</span>
-        <span style="color:var(--muted)">Credits</span>            <span style="color:var(--accent)">~${escapeHtml(costMinCr === costMaxCr ? String(costMinCr) : costMinCr + '–' + costMaxCr)}</span>
-      </div>${ragNote}`;
+        ${rows}
+      </div>`;
   }
 
   function toggleEstimate() {
@@ -1243,7 +1260,7 @@ GET    /admin/stale                find inactive wallets</pre>
       const inferRes = await fetch('/infer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'PAYMENT-SIGNATURE': proofHeader },
-        body: JSON.stringify({ prompt: pendingPrompt, walletAddress: actualFrom, model: pendingModel }),
+        body: JSON.stringify({ prompt: pendingPrompt, walletAddress: actualFrom, model: pendingModel, useRag: document.getElementById('ragToggle')?.checked || false }),
       });
       if (inferRes.status === 402) {
         const d = await inferRes.json();
@@ -1597,8 +1614,8 @@ GET    /admin/stale                find inactive wallets</pre>
 
   function appendMessage(role, content) {
     const thread = document.getElementById('convoThread');
-    const emptyEl = document.getElementById('convoEmpty');
-    if (emptyEl) emptyEl.remove();
+    // Show the conversation card as soon as we have messages
+    document.getElementById('respCard').style.display = 'block';
     const div = document.createElement('div');
     div.className = `msg msg-${role}`;
     const roleEl = document.createElement('div');
@@ -1622,9 +1639,13 @@ GET    /admin/stale                find inactive wallets</pre>
       if (!res.ok) return;
       const data = await res.json();
       const history = data.history;
-      if (!history || history.length === 0) return;
+      if (!history || history.length === 0) {
+        // No saved history — keep the card hidden
+        document.getElementById('respCard').style.display = 'none';
+        return;
+      }
       const thread = document.getElementById('convoThread');
-      thread.innerHTML = ''; // clear empty state
+      thread.innerHTML = ''; // clear before loading
       for (const msg of history) {
         const el = appendMessage(msg.role, msg.content);
         if (msg.role === 'assistant' && msg.meta) {
@@ -1675,7 +1696,7 @@ GET    /admin/stale                find inactive wallets</pre>
     const countSpan = document.getElementById('docCount');
     countSpan.textContent = `(${docs.length})`;
     if (docs.length === 0) {
-      list.innerHTML = '<div class="doc-empty" id="docEmpty">No documents uploaded yet.</div>';
+      list.innerHTML = '<div class="doc-empty" id="docEmpty">No files uploaded yet.</div>';
       return;
     }
     list.innerHTML = docs.map(d => `
@@ -1705,32 +1726,35 @@ GET    /admin/stale                find inactive wallets</pre>
   async function uploadDocument() {
     const title = document.getElementById('docTitle').value.trim();
     const fileInput = document.getElementById('docFileInput');
-    const contentArea = document.getElementById('docContent');
     const statusEl = document.getElementById('docUploadStatus');
     const btn = document.getElementById('docUploadBtn');
 
-    let content = contentArea.value;
+    if (!fileInput.files || fileInput.files.length === 0) {
+      statusEl.textContent = 'Select a file to upload';
+      statusEl.style.color = 'var(--red)';
+      statusEl.style.display = 'block';
+      return;
+    }
 
-    // If file selected, read it
-    if (fileInput.files && fileInput.files.length > 0) {
-      try {
-        content = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.onerror = reject;
-          reader.readAsText(fileInput.files[0]);
-        });
-        // Auto-fill title from filename if empty
-        if (!title) {
-          const name = fileInput.files[0].name.replace(/\.[^/.]+$/, '');
-          document.getElementById('docTitle').value = name;
-        }
-      } catch (e) {
-        statusEl.textContent = 'Failed to read file';
-        statusEl.style.color = 'var(--red)';
-        statusEl.style.display = 'block';
-        return;
+    // Read the file
+    let content;
+    try {
+      content = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsText(fileInput.files[0]);
+      });
+      // Auto-fill title from filename if empty
+      if (!title) {
+        const name = fileInput.files[0].name.replace(/\.[^/.]+$/, '');
+        document.getElementById('docTitle').value = name;
       }
+    } catch (e) {
+      statusEl.textContent = 'Failed to read file';
+      statusEl.style.color = 'var(--red)';
+      statusEl.style.display = 'block';
+      return;
     }
 
     const finalTitle = document.getElementById('docTitle').value.trim();
@@ -1741,7 +1765,7 @@ GET    /admin/stale                find inactive wallets</pre>
       return;
     }
     if (!content) {
-      statusEl.textContent = 'Content is required (upload a file or paste text)';
+      statusEl.textContent = 'File appears to be empty';
       statusEl.style.color = 'var(--red)';
       statusEl.style.display = 'block';
       return;
@@ -1771,7 +1795,6 @@ GET    /admin/stale                find inactive wallets</pre>
 
       // Clear form
       document.getElementById('docTitle').value = '';
-      document.getElementById('docContent').value = '';
       fileInput.value = '';
 
       // Refresh lists
@@ -1786,7 +1809,7 @@ GET    /admin/stale                find inactive wallets</pre>
   }
 
   async function deleteDocument(docId) {
-    if (!confirm('Delete this document? Its embeddings will be removed.')) return;
+    if (!confirm('Delete this file? Its embeddings will be removed.')) return;
     try {
       const res = await fetch(`/documents/${docId}`, {
         method: 'DELETE',
@@ -1806,9 +1829,10 @@ GET    /admin/stale                find inactive wallets</pre>
     if (!wallet) return;
     try { await fetch('/history', { method: 'DELETE' }); } catch (_) {}
     const thread = document.getElementById('convoThread');
-    thread.innerHTML = '<div class="convo-empty" id="convoEmpty">No messages yet. Ask anything to begin.</div>';
+    thread.innerHTML = '';
     document.getElementById('statusTxt').textContent = 'Conversation History';
     document.getElementById('dot').classList.remove('live');
+    document.getElementById('respCard').style.display = 'none';
     updateEstimate();
   }
 

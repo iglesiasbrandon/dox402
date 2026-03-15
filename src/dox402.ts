@@ -225,12 +225,18 @@ export class InferenceGate extends DurableObject<Env> {
 
     // RAG context injection (opt-in)
     let ragCost = 0;
+    let ragChunkCount = 0;
     if (body.useRag) {
       try {
         const ragContext = await queryRagContext(this.env, this.wallet, body.prompt);
         if (ragContext) {
           messages.unshift({ role: 'system' as const, content: ragContext.systemMessage });
           ragCost = ragContext.queryCost;
+          ragChunkCount = ragContext.chunkCount;
+          console.log('[InferenceGate] RAG injected %d chunks (%d chars) for wallet %s',
+            ragContext.chunkCount, ragContext.systemMessage.length, this.wallet);
+        } else {
+          console.log('[InferenceGate] RAG query returned no relevant chunks for wallet %s', this.wallet);
         }
       } catch (err) {
         console.error('[InferenceGate] RAG query failed:', err instanceof Error ? err.message : String(err));
