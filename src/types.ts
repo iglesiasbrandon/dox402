@@ -1,6 +1,6 @@
 // Conversation history message — stored in DO storage per wallet
 export interface ConversationMessage {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';  // 'system' used for RAG context injection
   content: string;
   meta?: {                 // usage metadata (assistant messages only)
     cost: number;          // µUSDC charged for this response
@@ -42,6 +42,7 @@ export interface InferRequest {
   walletAddress: string; // 0x-prefixed EVM address — validated against session at router; DO derives wallet from its ID
   maxTokens?: number;    // default 512
   model?: string;        // Workers AI model ID — validated against ALLOWED_MODELS; falls back to AI_MODEL
+  useRag?: boolean;      // opt-in RAG augmentation — retrieves relevant document chunks as context
 }
 
 // Stored SIWE nonce — kept in an array of up to 5 per wallet
@@ -116,10 +117,27 @@ export interface WalletRegistryEntry {
   registeredAt: number;
 }
 
+// Document upload request body
+export interface DocumentUploadRequest {
+  title: string;    // max 200 chars
+  content: string;  // raw text, max 100KB
+}
+
+// Document metadata returned by list/get endpoints
+export interface DocumentMeta {
+  id: string;
+  title: string;
+  charCount: number;
+  chunkCount: number;
+  createdAt: number;
+  embeddingCostMicroUSDC: number;
+}
+
 // Env bindings (matches wrangler.toml)
 export interface Env {
   DOX402: DurableObjectNamespace;
   AI: Ai;
+  VECTORIZE: VectorizeIndex;    // Cloudflare Vectorize binding for RAG document embeddings
   PAYMENT_ADDRESS: string;
   BASE_RPC_URL: string;
   NETWORK: string;

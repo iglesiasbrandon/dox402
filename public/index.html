@@ -417,6 +417,70 @@
       .right-panel { padding: 24px 16px 48px; }
       .lp-headline { font-size: 22px; }
     }
+
+    /* ── Tab row for prompt/documents ─────────────────────────────── */
+    .tab-row {
+      display: flex; gap: 0; margin-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab-btn {
+      background: none; border: none; border-bottom: 2px solid transparent;
+      padding: 6px 14px; font-size: 12px; font-weight: 600;
+      color: var(--muted); cursor: pointer; transition: color .15s, border-color .15s;
+      text-transform: uppercase; letter-spacing: .06em;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+
+    /* ── RAG toggle ─────────────────────────────────────────── */
+    .rag-toggle {
+      display: flex; align-items: center; gap: 6px;
+      cursor: pointer; user-select: none;
+    }
+    .rag-toggle input[type="checkbox"] {
+      width: 16px; height: 16px; accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .rag-label {
+      font-size: 11px; font-weight: 600; color: var(--muted);
+      font-family: var(--mono); letter-spacing: .04em;
+    }
+    .rag-toggle.disabled { opacity: 0.35; pointer-events: none; }
+
+    /* ── Documents panel ─────────────────────────────────────── */
+    .docs-panel { display: none; }
+    .docs-panel.active { display: block; }
+    .prompt-panel { display: block; }
+    .prompt-panel.hidden { display: none; }
+
+    .doc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; max-height: 200px; overflow-y: auto; }
+    .doc-item {
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r);
+      padding: 8px 12px; font-size: 12px;
+    }
+    .doc-item-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+    .doc-item-title { color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .doc-item-meta { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+    .doc-del-btn {
+      background: none; border: none; color: var(--muted); font-size: 16px;
+      cursor: pointer; padding: 2px 6px; transition: color .15s; flex-shrink: 0;
+    }
+    .doc-del-btn:hover { color: var(--red); }
+    .doc-empty { font-size: 12px; color: var(--muted); text-align: center; padding: 20px 0; }
+    .doc-upload-form { display: flex; flex-direction: column; gap: 8px; }
+    .doc-upload-form input[type="text"] { padding: 8px 10px; font-size: 13px; }
+    .doc-upload-form textarea { min-height: 60px; font-size: 12px; }
+    .doc-file-row { display: flex; align-items: center; gap: 8px; }
+    .doc-file-input { font-size: 12px; color: var(--muted); }
+    .doc-file-or { font-size: 10px; color: var(--muted); text-align: center; }
+    .doc-upload-btn {
+      background: var(--accent); color: #181818;
+      padding: 8px 16px; font-size: 13px; font-weight: 600;
+      border-radius: 9999px; align-self: flex-end;
+    }
+    .doc-upload-btn:hover:not(:disabled) { background: var(--accent-h); }
+    #docUploadStatus { font-size: 11px; color: var(--muted); display: none; }
   </style>
 </head>
 <body>
@@ -499,6 +563,13 @@
       </div>
 
       <div class="readme-section">
+        <div class="readme-h">RAG — Document Knowledge Base</div>
+        <p style="font-size:13px;color:var(--muted);line-height:1.65;margin:0">
+          Each wallet can upload text documents that become part of its personal knowledge base. Documents are chunked (~400 tokens, 50-token overlap), embedded via Workers AI (<code>bge-base-en-v1.5</code>, 768-dim), and stored in a shared <a href="https://developers.cloudflare.com/vectorize/" target="_blank">Cloudflare Vectorize</a> index with per-wallet metadata filtering. When <code>useRag: true</code> is set on an inference request, the user's prompt is embedded, matched against their documents (top-5 chunks, cosine similarity ≥ 0.65), and the relevant text is injected as a system message. RAG context is ephemeral — not stored in history — and regenerated fresh each request. RAG failure is non-fatal: if Vectorize is unreachable, inference proceeds without context. Embedding cost is deducted at document upload; the extra LLM input tokens from retrieved context are captured by the normal billing formula.
+        </p>
+      </div>
+
+      <div class="readme-section">
         <div class="readme-h">Request flow</div>
         <div class="mermaid">
 sequenceDiagram
@@ -545,7 +616,12 @@ POST   /infer     run inference (post-billed)
 POST   /deposit   top-up balance without inference
 GET    /balance   credit balance + usage stats
 GET    /history   conversation messages + meta
-DELETE /history   clear conversation
+DELETE /history      clear conversation
+
+<strong>RAG Documents (Cookie)</strong>
+POST   /documents    upload document for RAG
+GET    /documents    list uploaded documents
+DELETE /documents/:id delete document + embeddings
 
 <strong>Admin (Bearer ADMIN_SECRET)</strong>
 GET    /admin/wallets              paginated wallet list
@@ -690,35 +766,63 @@ GET    /admin/stale                find inactive wallets</pre>
 
     </div>
 
-    <!-- Prompt -->
+    <!-- Prompt / Documents tabs -->
     <div class="card">
-      <div class="card-title">
-        Prompt
-        <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:4px">(Ctrl+Enter to send)</span>
+      <div class="tab-row">
+        <button class="tab-btn active" id="tabPrompt" onclick="switchTab('prompt')">Prompt</button>
+        <button class="tab-btn" id="tabDocs" onclick="switchTab('docs')">📄 Documents <span id="docCount">(0)</span></button>
       </div>
-      <div class="model-row">
-        <span class="model-label">Model</span>
-        <select id="modelSelect" class="model-select">
-          <option value="@cf/meta/llama-3.1-8b-instruct">Llama 3.1 8B · fast</option>
-          <option value="@cf/meta/llama-3.3-70b-instruct-fp8-fast">Llama 3.3 70B · smart</option>
-          <option value="@cf/google/gemma-3-12b-it">Gemma 3 12B</option>
-          <option value="@cf/mistral/mistral-7b-instruct-v0.2">Mistral 7B</option>
-          <option value="@cf/deepseek-ai/deepseek-r1-distill-qwen-32b">DeepSeek R1 32B</option>
-        </select>
+
+      <!-- Prompt panel -->
+      <div class="prompt-panel" id="promptPanel">
+        <div class="model-row">
+          <span class="model-label">Model</span>
+          <select id="modelSelect" class="model-select">
+            <option value="@cf/meta/llama-3.1-8b-instruct">Llama 3.1 8B · fast</option>
+            <option value="@cf/meta/llama-3.3-70b-instruct-fp8-fast">Llama 3.3 70B · smart</option>
+            <option value="@cf/google/gemma-3-12b-it">Gemma 3 12B</option>
+            <option value="@cf/mistral/mistral-7b-instruct-v0.2">Mistral 7B</option>
+            <option value="@cf/deepseek-ai/deepseek-r1-distill-qwen-32b">DeepSeek R1 32B</option>
+          </select>
+          <label class="rag-toggle disabled" id="ragToggleLabel" title="Augment with your uploaded documents">
+            <input type="checkbox" id="ragToggle" disabled />
+            <span class="rag-label">RAG</span>
+          </label>
+        </div>
+        <textarea id="promptIn" placeholder="Ask anything…" rows="4"></textarea>
+        <!-- Live token counter + estimate toggle -->
+        <div id="estRow" style="display:none;margin-top:7px;align-items:center;justify-content:space-between">
+          <span id="estTokens" style="font-size:11px;color:var(--muted);font-family:var(--mono)"></span>
+          <button class="btn-ghost" id="estToggleBtn" style="font-size:11px;padding:4px 10px">Estimate cost →</button>
+        </div>
+        <!-- Estimate breakdown card -->
+        <div class="card" id="estCard" style="display:none;margin-top:10px;padding:14px 16px">
+          <div class="card-title" style="margin-bottom:10px">Cost Estimate</div>
+          <div id="estBody" style="font-family:var(--mono);font-size:12px;color:var(--muted);line-height:2.1"></div>
+          <div style="font-size:11px;color:var(--muted);margin-top:10px;opacity:0.55">output range assumes 400–2,000 chars</div>
+        </div>
+        <button class="btn-primary" id="sendBtn">Send →</button>
       </div>
-      <textarea id="promptIn" placeholder="Ask anything…" rows="4"></textarea>
-      <!-- Live token counter + estimate toggle -->
-      <div id="estRow" style="display:none;margin-top:7px;align-items:center;justify-content:space-between">
-        <span id="estTokens" style="font-size:11px;color:var(--muted);font-family:var(--mono)"></span>
-        <button class="btn-ghost" id="estToggleBtn" style="font-size:11px;padding:4px 10px">Estimate cost →</button>
+
+      <!-- Documents panel -->
+      <div class="docs-panel" id="docsPanel">
+        <div id="docList" class="doc-list">
+          <div class="doc-empty" id="docEmpty">No documents uploaded yet.</div>
+        </div>
+        <hr class="divider" />
+        <div class="doc-upload-form">
+          <input type="text" id="docTitle" placeholder="Document title" maxlength="200" />
+          <div class="doc-file-row">
+            <input type="file" id="docFileInput" class="doc-file-input" accept=".txt,.md,.csv,.json,.html" />
+          </div>
+          <div class="doc-file-or">— or paste text below —</div>
+          <textarea id="docContent" placeholder="Paste document text here…" rows="4"></textarea>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span id="docUploadStatus"></span>
+            <button class="doc-upload-btn" id="docUploadBtn" onclick="uploadDocument()">Upload →</button>
+          </div>
+        </div>
       </div>
-      <!-- Estimate breakdown card -->
-      <div class="card" id="estCard" style="display:none;margin-top:10px;padding:14px 16px">
-        <div class="card-title" style="margin-bottom:10px">Cost Estimate</div>
-        <div id="estBody" style="font-family:var(--mono);font-size:12px;color:var(--muted);line-height:2.1"></div>
-        <div style="font-size:11px;color:var(--muted);margin-top:10px;opacity:0.55">output range assumes 400–2,000 chars</div>
-      </div>
-      <button class="btn-primary" id="sendBtn">Send →</button>
     </div>
 
     <!-- Conversation -->
@@ -817,6 +921,7 @@ GET    /admin/stale                find inactive wallets</pre>
       await fetchBalance();
       if (wallet && isSessionValid()) {
         await loadHistory();
+        await loadDocuments();
       }
     } else if (wallet && !isSessionValid()) {
       clearSession();
@@ -835,6 +940,7 @@ GET    /admin/stale                find inactive wallets</pre>
   });
   document.getElementById('promptIn').addEventListener('input', updateEstimate);
   document.getElementById('modelSelect').addEventListener('change', updateEstimate);
+  document.getElementById('ragToggle').addEventListener('change', updateEstimate);
 
   // ── Wallet ─────────────────────────────────────────────────────────────────
   async function connectInjected() {
@@ -912,6 +1018,7 @@ GET    /admin/stale                find inactive wallets</pre>
     showConnected(wallet);
     fetchBalance();
     loadHistory();
+    loadDocuments();
   }
 
   function disconnect() {
@@ -1022,6 +1129,12 @@ GET    /admin/stale                find inactive wallets</pre>
     const costMinCr   = Math.max(1, Math.ceil((neuronsMin * 0.011 + OVERHEAD) / (1 - MARGIN)));
     const costMaxCr   = Math.max(1, Math.ceil((neuronsMax * 0.011 + OVERHEAD) / (1 - MARGIN)));
 
+    const ragOn = document.getElementById('ragToggle')?.checked;
+    let ragNote = '';
+    if (ragOn) {
+      ragNote = '<div style="color:var(--accent);font-size:11px;margin-top:4px">+ ~2,000 context tokens (estimated RAG)</div>';
+    }
+
     // Estimate card body (only if open)
     if (!estOpen) return;
 
@@ -1033,7 +1146,7 @@ GET    /admin/stale                find inactive wallets</pre>
         <span style="color:var(--border);grid-column:1/-1;border-top:1px solid var(--border);margin:4px 0"></span>
         <span style="color:var(--muted)">Output (estimated)</span> <span style="color:var(--muted)">${escapeHtml((outMinToks*4).toLocaleString())}–${escapeHtml((outMaxToks*4).toLocaleString())} chars</span>
         <span style="color:var(--muted)">Credits</span>            <span style="color:var(--accent)">~${escapeHtml(costMinCr === costMaxCr ? String(costMinCr) : costMinCr + '–' + costMaxCr)}</span>
-      </div>`;
+      </div>${ragNote}`;
   }
 
   function toggleEstimate() {
@@ -1197,6 +1310,7 @@ GET    /admin/stale                find inactive wallets</pre>
   // ── Core inference ─────────────────────────────────────────────────────────
   async function doInfer(prompt, proofHeader, model) {
     const capturedPreBalance = readDisplayedBalance();
+    const useRag = document.getElementById('ragToggle')?.checked || false;
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (proofHeader) headers['PAYMENT-SIGNATURE'] = proofHeader;
@@ -1204,7 +1318,7 @@ GET    /admin/stale                find inactive wallets</pre>
       const res = await fetch('/infer', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ prompt, walletAddress: wallet, model }),
+        body: JSON.stringify({ prompt, walletAddress: wallet, model, useRag }),
       });
 
       if (res.status === 401) {
@@ -1521,6 +1635,173 @@ GET    /admin/stale                find inactive wallets</pre>
     } catch (_) {}
   }
 
+  // ── Tab switching ─────────────────────────────────────────────────────────
+  function switchTab(tab) {
+    const promptPanel = document.getElementById('promptPanel');
+    const docsPanel = document.getElementById('docsPanel');
+    const tabPrompt = document.getElementById('tabPrompt');
+    const tabDocs = document.getElementById('tabDocs');
+    if (tab === 'prompt') {
+      promptPanel.classList.remove('hidden');
+      docsPanel.classList.remove('active');
+      tabPrompt.classList.add('active');
+      tabDocs.classList.remove('active');
+    } else {
+      promptPanel.classList.add('hidden');
+      docsPanel.classList.add('active');
+      tabPrompt.classList.remove('active');
+      tabDocs.classList.add('active');
+    }
+  }
+
+  // ── Document management ───────────────────────────────────────────────────
+  let documentCount = 0;
+
+  async function loadDocuments() {
+    try {
+      const res = await fetch('/documents', { method: 'GET', credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      documentCount = data.documents.length;
+      renderDocumentList(data.documents);
+      updateRagToggle();
+    } catch (e) {
+      console.error('Failed to load documents:', e);
+    }
+  }
+
+  function renderDocumentList(docs) {
+    const list = document.getElementById('docList');
+    const countSpan = document.getElementById('docCount');
+    countSpan.textContent = `(${docs.length})`;
+    if (docs.length === 0) {
+      list.innerHTML = '<div class="doc-empty" id="docEmpty">No documents uploaded yet.</div>';
+      return;
+    }
+    list.innerHTML = docs.map(d => `
+      <div class="doc-item">
+        <div class="doc-item-info">
+          <div class="doc-item-title">${escapeHtml(d.title)}</div>
+          <div class="doc-item-meta">${d.chunkCount} chunks · ${(d.charCount / 1024).toFixed(1)} KB · ${new Date(d.createdAt).toLocaleDateString()}</div>
+        </div>
+        <button class="doc-del-btn" onclick="deleteDocument('${d.id}')" title="Delete document">✕</button>
+      </div>
+    `).join('');
+  }
+
+  function updateRagToggle() {
+    const label = document.getElementById('ragToggleLabel');
+    const checkbox = document.getElementById('ragToggle');
+    if (documentCount > 0) {
+      label.classList.remove('disabled');
+      checkbox.disabled = false;
+    } else {
+      label.classList.add('disabled');
+      checkbox.disabled = true;
+      checkbox.checked = false;
+    }
+  }
+
+  async function uploadDocument() {
+    const title = document.getElementById('docTitle').value.trim();
+    const fileInput = document.getElementById('docFileInput');
+    const contentArea = document.getElementById('docContent');
+    const statusEl = document.getElementById('docUploadStatus');
+    const btn = document.getElementById('docUploadBtn');
+
+    let content = contentArea.value;
+
+    // If file selected, read it
+    if (fileInput.files && fileInput.files.length > 0) {
+      try {
+        content = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsText(fileInput.files[0]);
+        });
+        // Auto-fill title from filename if empty
+        if (!title) {
+          const name = fileInput.files[0].name.replace(/\.[^/.]+$/, '');
+          document.getElementById('docTitle').value = name;
+        }
+      } catch (e) {
+        statusEl.textContent = 'Failed to read file';
+        statusEl.style.color = 'var(--red)';
+        statusEl.style.display = 'block';
+        return;
+      }
+    }
+
+    const finalTitle = document.getElementById('docTitle').value.trim();
+    if (!finalTitle) {
+      statusEl.textContent = 'Title is required';
+      statusEl.style.color = 'var(--red)';
+      statusEl.style.display = 'block';
+      return;
+    }
+    if (!content) {
+      statusEl.textContent = 'Content is required (upload a file or paste text)';
+      statusEl.style.color = 'var(--red)';
+      statusEl.style.display = 'block';
+      return;
+    }
+
+    btn.disabled = true;
+    statusEl.textContent = 'Uploading & embedding…';
+    statusEl.style.color = 'var(--muted)';
+    statusEl.style.display = 'block';
+
+    try {
+      const res = await fetch('/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ title: finalTitle, content }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Upload failed (${res.status})`);
+      }
+
+      const meta = await res.json();
+      statusEl.textContent = `✓ Uploaded: ${meta.chunkCount} chunks, cost ${meta.embeddingCostMicroUSDC} µUSDC`;
+      statusEl.style.color = 'var(--green)';
+
+      // Clear form
+      document.getElementById('docTitle').value = '';
+      document.getElementById('docContent').value = '';
+      fileInput.value = '';
+
+      // Refresh lists
+      await loadDocuments();
+      await fetchBalance();
+    } catch (e) {
+      statusEl.textContent = e.message;
+      statusEl.style.color = 'var(--red)';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function deleteDocument(docId) {
+    if (!confirm('Delete this document? Its embeddings will be removed.')) return;
+    try {
+      const res = await fetch(`/documents/${docId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Delete failed');
+      }
+      await loadDocuments();
+    } catch (e) {
+      showErr(e.message);
+    }
+  }
+
   async function clearHistory() {
     if (!wallet) return;
     try { await fetch('/history', { method: 'DELETE' }); } catch (_) {}
@@ -1577,6 +1858,14 @@ GET    /admin/stale                find inactive wallets</pre>
   document.getElementById('sendBtn').addEventListener('click', submit);
   document.getElementById('copyLastBtn').addEventListener('click', copyLast);
   document.getElementById('clearHistoryBtn').addEventListener('click', clearHistory);
+  document.getElementById('docFileInput').addEventListener('change', function() {
+    if (this.files && this.files.length > 0) {
+      const titleInput = document.getElementById('docTitle');
+      if (!titleInput.value.trim()) {
+        titleInput.value = this.files[0].name.replace(/\.[^/.]+$/, '');
+      }
+    }
+  });
 </script>
 
 

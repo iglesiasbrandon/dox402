@@ -93,6 +93,9 @@ Authenticated endpoints accept either an `Authorization: Bearer <token>` header 
 | `GET /balance` | Credit balance + usage stats |
 | `GET /history` | Conversation messages + metadata |
 | `DELETE /history` | Clear conversation |
+| `POST /documents` | Upload document for RAG (embedding cost deducted) |
+| `GET /documents` | List uploaded documents |
+| `DELETE /documents/:id` | Delete document + Vectorize embeddings |
 
 ### Admin (requires `ADMIN_SECRET` Bearer token)
 | Endpoint | Description |
@@ -123,3 +126,4 @@ Authenticated endpoints accept either an `Authorization: Bearer <token>` header 
 - **Verification**: Tier 1 structural checks + Tier 2 on-chain RPC receipt verification via `eth_getTransactionReceipt`. Grace mode provides provisional credit when RPC is unreachable, with automatic alarm-based re-verification.
 - **Streaming**: SSE responses with heartbeat keepalive (`:keepalive` comments every 15s of inactivity) and a 2-minute max-duration guard to prevent runaway streams. Backpressure is handled naturally via `await writer.write()`.
 - **Billing safeguards**: failed AI responses (empty, error JSON, stream errors) are detected and not billed — credits are only deducted for successful inference.
+- **RAG (Retrieval-Augmented Generation)**: per-wallet document knowledge base powered by Cloudflare Vectorize and Workers AI embeddings (`bge-base-en-v1.5`). Documents are chunked (1600 chars, 200 char overlap), embedded, and stored in a shared Vectorize index with per-wallet metadata filtering. Opt-in via `useRag: true` on `/infer` — relevant chunks are retrieved (top-5, cosine similarity ≥ 0.65) and injected as system context. RAG failure is non-fatal.

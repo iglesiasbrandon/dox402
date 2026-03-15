@@ -140,9 +140,17 @@ function makeTestDO(opts?: { aiStream?: ReadableStream }) {
     getWithMetadata: vi.fn(async () => ({ value: null, metadata: null })),
   };
 
+  const mockVectorize = {
+    upsert: vi.fn(async () => ({ count: 0, ids: [] })),
+    query: vi.fn(async () => ({ count: 0, matches: [] })),
+    deleteByIds: vi.fn(async () => ({ count: 0, ids: [] })),
+    getByIds: vi.fn(async () => []),
+  };
+
   const env: Env = {
     DOX402: {} as any,
     AI: mockAI as any,
+    VECTORIZE: mockVectorize as any,
     PAYMENT_ADDRESS: '0x24AF3AcF8A91f5185e8CfB28087E2C54d49785B1',
     BASE_RPC_URL: 'https://mainnet.base.org',
     NETWORK: 'base-mainnet',
@@ -151,7 +159,7 @@ function makeTestDO(opts?: { aiStream?: ReadableStream }) {
   };
 
   const gate = new InferenceGate(ctx as any, env as any);
-  return { gate, storage, waitUntilPromises, mockAI, mockKV };
+  return { gate, storage, waitUntilPromises, mockAI, mockKV, mockVectorize };
 }
 
 async function drainStream(response: Response): Promise<string> {
@@ -943,5 +951,357 @@ describe('InferenceGate — KV wallet registration', () => {
     await drainStream(res2);
     await Promise.allSettled(waitUntilPromises);
     expect(mockKV.put).not.toHaveBeenCalled();
+  });
+});
+
+// ── Document CRUD ────────────────────────────────────────────────────────────
+
+describe('InferenceGate — document CRUD', () => {
+
+  /** Override mockAI.run to handle both embedding and inference models */
+  function setupAIForDocuments(mockAI: { run: ReturnType<typeof vi.fn> }) {
+    mockAI.run.mockImplementation(async (model: string) => {
+      if (model === '@cf/baai/bge-base-en-v1.5') {
+        return { data: [new Array(768).fill(0.1)] };
+      }
+      return mockSSEStream([
+        'data: {"response":"Hello "}\n\n',
+        'data: {"response":"world"}\n\n',
+        'data: {"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n',
+        'data: [DONE]\n\n',
+      ]);
+    });
+  }
+
+  it('handleDocumentUpload returns 201 with DocumentMeta', async () => {
+    const { gate, storage, mockAI } = makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 10000);
+
+    const res = await gate.handleDocumentUpload(
+      { title: 'test doc', content: 'Hello world content for testing RAG upload' },
+      TEST_WALLET,
+    );
+    expect(res.status).toBe(201);
+
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.id).toBeDefined();
+    expect(typeof body.id).toBe('string');
+    expect(body.title).toBe('test doc');
+    expect(body.charCount).toBe(42);
+    expect(body.chunkCount).toBeGreaterThanOrEqual(1);
+    expect(body.createdAt).toBeDefined();
+    expect(body.embeddingCostMicroUSDC).toBeGreaterThan(0);
+  });
+
+  it('handleDocumentUpload deducts embedding cost from balance', async () => {
+    const { gate, storage, mockAI } = makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 10000);
+
+    await gate.handleDocumentUpload(
+      { title: 'cost test', content: 'Some content to embed and charge for' },
+      TEST_WALLET,
+    );
+
+    const state = getWalletState(storage);
+    expect(state.balance).toBeLessThan(10000);
+    expect(state.total_spent).toBeGreaterThan(0);
+  });
+
+  it('handleDocumentUpload inserts into documents and document_chunks tables', async () => {
+    const { gate, storage, mockAI } = makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 10000);
+
+    await gate.handleDocumentUpload(
+      { title: 'sql test', content: 'Document content to verify SQL insertion' },
+      TEST_WALLET,
+    );
+
+    const docs = storage.sql.exec<{ id: string }>('SELECT * FROM documents').toArray();
+    expect(docs.length).toBe(1);
+
+    const chunks = storage.sql.exec<{ chunk_id: string }>('SELECT * FROM document_chunks').toArray();
+    expect(chunks.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('handleDocumentUpload calls VECTORIZE.upsert', async () => {
+    const { gate, storage, mockAI, mockVectorize } = makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 10000);
+
+    await gate.handleDocumentUpload(
+      { title: 'vectorize test', content: 'Content to test vectorize upsert call' },
+      TEST_WALLET,
+    );
+
+    expect(mockVectorize.upsert).toHaveBeenCalled();
+    const firstArg = mockVectorize.upsert.mock.calls[0][0] as Array<{ id: string; metadata: Record<string, unknown> }>;
+    expect(Array.isArray(firstArg)).toBe(true);
+    expect(firstArg[0].metadata.wallet).toBe(TEST_WALLET);
+  });
+
+  it('handleDocumentUpload rejects content > 100KB', async () => {
+    const { gate, storage, mockAI } = makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 10000);
+
+    const res = await gate.handleDocumentUpload(
+      { title: 'too big', content: 'x'.repeat(102_401) },
+      TEST_WALLET,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('handleDocumentUpload rejects when at document limit', async () => {
+    const { gate, storage, mockAI } = makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 10000);
+
+    // Insert 50 dummy documents directly via SQL
+    for (let i = 0; i < 50; i++) {
+      storage.sql.exec(
+        `INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `doc-${i}`, `title-${i}`, 'content', 7, 1, 1, Date.now(),
+      );
+    }
+
+    const res = await gate.handleDocumentUpload(
+      { title: 'one too many', content: 'should be rejected' },
+      TEST_WALLET,
+    );
+    expect(res.status).toBe(409);
+  });
+
+  it('handleDocumentUpload rejects insufficient balance', async () => {
+    const { gate, storage, mockAI } = makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 0);
+
+    const res = await gate.handleDocumentUpload(
+      { title: 'no funds', content: 'should fail due to zero balance' },
+      TEST_WALLET,
+    );
+    expect(res.status).toBe(402);
+  });
+
+  it('handleDocumentList returns documents in descending order', async () => {
+    const { gate, storage } = makeTestDO();
+
+    // Insert 2 documents directly via SQL with different timestamps
+    storage.sql.exec(
+      `INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      'doc-older', 'Older Doc', 'old content', 11, 1, 1, 1000,
+    );
+    storage.sql.exec(
+      `INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      'doc-newer', 'Newer Doc', 'new content', 11, 1, 1, 2000,
+    );
+
+    const res = await gate.handleDocumentList();
+    expect(res.status).toBe(200);
+
+    const body = await res.json() as { documents: Array<{ id: string; title: string }> };
+    expect(body.documents.length).toBe(2);
+    expect(body.documents[0].title).toBe('Newer Doc');
+    expect(body.documents[1].title).toBe('Older Doc');
+  });
+
+  it('handleDocumentDelete removes from SQL and calls VECTORIZE.deleteByIds', async () => {
+    const { gate, storage, mockVectorize } = makeTestDO();
+
+    const docId = 'doc-to-delete';
+
+    // Insert a document and chunks directly
+    storage.sql.exec(
+      `INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      docId, 'Delete Me', 'some content', 12, 2, 1, Date.now(),
+    );
+    storage.sql.exec(
+      'INSERT INTO document_chunks (chunk_id, document_id, chunk_index, chunk_text) VALUES (?, ?, ?, ?)',
+      `${docId}:0`, docId, 0, 'chunk zero',
+    );
+    storage.sql.exec(
+      'INSERT INTO document_chunks (chunk_id, document_id, chunk_index, chunk_text) VALUES (?, ?, ?, ?)',
+      `${docId}:1`, docId, 1, 'chunk one',
+    );
+
+    const res = await gate.handleDocumentDelete(docId);
+    expect(res.status).toBe(200);
+
+    // Verify SQL deletion
+    const docsLeft = storage.sql.exec<{ id: string }>('SELECT * FROM documents WHERE id = ?', docId).toArray();
+    expect(docsLeft.length).toBe(0);
+
+    const chunksLeft = storage.sql.exec<{ chunk_id: string }>('SELECT * FROM document_chunks WHERE document_id = ?', docId).toArray();
+    expect(chunksLeft.length).toBe(0);
+
+    // Verify Vectorize deleteByIds was called
+    expect(mockVectorize.deleteByIds).toHaveBeenCalledWith([`${docId}:0`, `${docId}:1`]);
+  });
+
+  it('handleDocumentDelete returns 404 for unknown ID', async () => {
+    const { gate } = makeTestDO();
+
+    const res = await gate.handleDocumentDelete('nonexistent');
+    expect(res.status).toBe(404);
+  });
+});
+
+// ── RAG-augmented inference ──────────────────────────────────────────────────
+
+describe('InferenceGate — RAG-augmented inference', () => {
+
+  /** Override mockAI.run to handle both embedding and inference models */
+  function setupAIForRAG(mockAI: { run: ReturnType<typeof vi.fn> }) {
+    mockAI.run.mockImplementation(async (model: string) => {
+      if (model === '@cf/baai/bge-base-en-v1.5') {
+        return { data: [new Array(768).fill(0.1)] };
+      }
+      return mockSSEStream([
+        'data: {"response":"Hello "}\n\n',
+        'data: {"response":"world"}\n\n',
+        'data: {"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n',
+        'data: [DONE]\n\n',
+      ]);
+    });
+  }
+
+  it('useRag=true with matching chunks prepends system message', async () => {
+    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = makeTestDO();
+    setupAIForRAG(mockAI);
+    setBalance(storage, 10000);
+
+    mockVectorize.query.mockResolvedValue({
+      count: 1,
+      matches: [{ id: 'doc:0', score: 0.8, metadata: { text: 'Some relevant context' } }],
+    });
+
+    const res = await gate.handleInfer(
+      { prompt: 'hello', walletAddress: TEST_WALLET, useRag: true },
+      null, 'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(200);
+    await drainStream(res);
+    await Promise.allSettled(waitUntilPromises);
+
+    // Find the inference AI.run call (not the embedding call)
+    const inferenceCalls = mockAI.run.mock.calls.filter(
+      (call: unknown[]) => call[0] !== '@cf/baai/bge-base-en-v1.5',
+    );
+    expect(inferenceCalls.length).toBeGreaterThanOrEqual(1);
+
+    const messages = (inferenceCalls[0][1] as { messages: Array<{ role: string; content: string }> }).messages;
+    expect(messages[0].role).toBe('system');
+    expect(messages[0].content).toContain('Some relevant context');
+  });
+
+  it('useRag=true with no matches does not prepend system message', async () => {
+    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = makeTestDO();
+    setupAIForRAG(mockAI);
+    setBalance(storage, 10000);
+
+    mockVectorize.query.mockResolvedValue({ count: 0, matches: [] });
+
+    const res = await gate.handleInfer(
+      { prompt: 'hello', walletAddress: TEST_WALLET, useRag: true },
+      null, 'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(200);
+    await drainStream(res);
+    await Promise.allSettled(waitUntilPromises);
+
+    // Find the inference AI.run call
+    const inferenceCalls = mockAI.run.mock.calls.filter(
+      (call: unknown[]) => call[0] !== '@cf/baai/bge-base-en-v1.5',
+    );
+    expect(inferenceCalls.length).toBeGreaterThanOrEqual(1);
+
+    const messages = (inferenceCalls[0][1] as { messages: Array<{ role: string }> }).messages;
+    const hasSystem = messages.some((m: { role: string }) => m.role === 'system');
+    expect(hasSystem).toBe(false);
+  });
+
+  it('useRag=false (default) does not query Vectorize', async () => {
+    const { gate, storage, waitUntilPromises, mockVectorize } = makeTestDO();
+    setBalance(storage, 10000);
+
+    const res = await callInfer(gate);
+    await drainStream(res);
+    await Promise.allSettled(waitUntilPromises);
+
+    expect(mockVectorize.query).not.toHaveBeenCalled();
+  });
+
+  it('RAG query cost added to billing', async () => {
+    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = makeTestDO();
+    setupAIForRAG(mockAI);
+    setBalance(storage, 10000);
+
+    mockVectorize.query.mockResolvedValue({
+      count: 1,
+      matches: [{ id: 'doc:0', score: 0.8, metadata: { text: 'Context chunk' } }],
+    });
+
+    const res = await gate.handleInfer(
+      { prompt: 'hello', walletAddress: TEST_WALLET, useRag: true },
+      null, 'localhost', TEST_WALLET,
+    );
+    await drainStream(res);
+    await Promise.allSettled(waitUntilPromises);
+
+    // Also run a non-RAG inference for comparison
+    const { gate: gate2, storage: storage2, waitUntilPromises: wup2 } = makeTestDO();
+    setBalance(storage2, 10000);
+
+    const res2 = await callInfer(gate2);
+    await drainStream(res2);
+    await Promise.allSettled(wup2);
+
+    const ragState = getWalletState(storage);
+    const noRagState = getWalletState(storage2);
+
+    // RAG inference should cost more than non-RAG (inference cost + RAG query cost)
+    expect(ragState.total_spent).toBeGreaterThan(noRagState.total_spent);
+  });
+
+  it('RAG failure is non-fatal (inference proceeds)', async () => {
+    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = makeTestDO();
+    setupAIForRAG(mockAI);
+    setBalance(storage, 10000);
+
+    // Make Vectorize.query throw
+    mockVectorize.query.mockRejectedValue(new Error('Vectorize unavailable'));
+
+    const res = await gate.handleInfer(
+      { prompt: 'hello', walletAddress: TEST_WALLET, useRag: true },
+      null, 'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(200);
+    await drainStream(res);
+    await Promise.allSettled(waitUntilPromises);
+
+    // Inference should still succeed
+    const state = getWalletState(storage);
+    expect(state.total_requests).toBe(1);
+  });
+
+  it('useRag=undefined is backward compatible (Vectorize not queried)', async () => {
+    const { gate, storage, waitUntilPromises, mockVectorize } = makeTestDO();
+    setBalance(storage, 10000);
+
+    const res = await gate.handleInfer(
+      { prompt: 'hello', walletAddress: TEST_WALLET },
+      null, 'localhost', TEST_WALLET,
+    );
+    await drainStream(res);
+    await Promise.allSettled(waitUntilPromises);
+
+    expect(mockVectorize.query).not.toHaveBeenCalled();
   });
 });

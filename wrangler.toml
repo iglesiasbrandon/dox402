@@ -25,6 +25,10 @@ new_sqlite_classes = ["InferenceGate"]
 binding = "WALLET_REGISTRY"
 id = "4882d8452d0742a09defeff4826a5ad1"
 
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "rag-index"
+
 [vars]
 NETWORK = "base-mainnet"
 PAYMENT_ADDRESS = "0x24AF3AcF8A91f5185e8CfB28087E2C54d49785B1" # overridden by secret in production

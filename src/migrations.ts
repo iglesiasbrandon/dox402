@@ -71,4 +71,31 @@ export const MIGRATIONS: Migration[] = [
       created_at INTEGER NOT NULL
     )`);
   }],
+
+  // ── Migration 002: RAG document storage ──────────────────────────────────
+  ['002', (sql) => {
+    // ── documents: per-wallet document metadata + full text ──
+    sql.exec(`CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      char_count INTEGER NOT NULL,
+      chunk_count INTEGER NOT NULL DEFAULT 0,
+      embedding_cost INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    )`);
+
+    // ── document_chunks: maps Vectorize vector IDs back to parent document ──
+    // Vectorize stores the embeddings + chunk text in metadata;
+    // this table links chunk IDs to documents for cascade delete.
+    sql.exec(`CREATE TABLE IF NOT EXISTS document_chunks (
+      chunk_id TEXT PRIMARY KEY,
+      document_id TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL,
+      chunk_text TEXT NOT NULL,
+      FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+    )`);
+
+    sql.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON document_chunks(document_id)`);
+  }],
 ];

@@ -120,10 +120,14 @@ function makeMockDONamespace(opts?: {
   const handleBalance = vi.fn(async () => Response.json({ balance: 0 }));
   const handleHistory = vi.fn(async () => Response.json({ history: [] }));
   const handleClearHistory = vi.fn(async () => Response.json({ ok: true }));
+  const handleDocumentUpload = vi.fn(async () => Response.json({ id: 'mock-doc-id', title: 'test', charCount: 100, chunkCount: 1, createdAt: Date.now(), embeddingCostMicroUSDC: 1 }, { status: 201 }));
+  const handleDocumentList = vi.fn(async () => Response.json({ documents: [] }));
+  const handleDocumentDelete = vi.fn(async () => Response.json({ ok: true, deletedChunks: 3 }));
 
   const stub = {
     handleNonce, handleVerifyNonce, handleInfer, handleDeposit,
     handleBalance, handleHistory, handleClearHistory,
+    handleDocumentUpload, handleDocumentList, handleDocumentDelete,
   };
 
   return {
@@ -611,5 +615,125 @@ describe('/auth/logout', () => {
 
     const setCookie = res.headers.get('Set-Cookie');
     expect(setCookie).not.toContain('Secure');
+  });
+});
+
+// ── Document routes ─────────────────────────────────────────────────────────
+
+describe('Document routes (/documents)', () => {
+  it('POST /documents requires auth and routes to DO', async () => {
+    const wallet = generateWallet();
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+    const { token } = await createSessionToken(wallet.address, SESSION_SECRET);
+
+    const req = new Request('https://dox402.example.com/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ title: 'My Doc', content: 'Hello world' }),
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(201);
+    expect(doNS._mocks.handleDocumentUpload).toHaveBeenCalledOnce();
+  });
+
+  it('GET /documents requires auth and routes to DO', async () => {
+    const wallet = generateWallet();
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+    const { token } = await createSessionToken(wallet.address, SESSION_SECRET);
+
+    const req = new Request('https://dox402.example.com/documents', {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+    expect(doNS._mocks.handleDocumentList).toHaveBeenCalledOnce();
+  });
+
+  it('DELETE /documents/:id requires auth and routes to DO', async () => {
+    const wallet = generateWallet();
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+    const { token } = await createSessionToken(wallet.address, SESSION_SECRET);
+
+    const req = new Request('https://dox402.example.com/documents/abc-123', {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+    expect(doNS._mocks.handleDocumentDelete).toHaveBeenCalledWith('abc-123');
+  });
+
+  it('POST /documents rejects missing title (400)', async () => {
+    const wallet = generateWallet();
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+    const { token } = await createSessionToken(wallet.address, SESSION_SECRET);
+
+    const req = new Request('https://dox402.example.com/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ content: 'Hello world' }),
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(400);
+    expect(doNS._mocks.handleDocumentUpload).not.toHaveBeenCalled();
+  });
+
+  it('POST /documents rejects missing content (400)', async () => {
+    const wallet = generateWallet();
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+    const { token } = await createSessionToken(wallet.address, SESSION_SECRET);
+
+    const req = new Request('https://dox402.example.com/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ title: 'My Doc' }),
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /documents rejects unauthenticated request (401)', async () => {
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+
+    const req = new Request('https://dox402.example.com/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'My Doc', content: 'Hello' }),
+    });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(401);
+  });
+
+  it('GET /documents rejects unauthenticated request (401)', async () => {
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+
+    const req = new Request('https://dox402.example.com/documents', { method: 'GET' });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(401);
+  });
+
+  it('DELETE /documents/:id rejects unauthenticated request (401)', async () => {
+    const doNS = makeMockDONamespace();
+    const env = makeEnv({ DOX402: doNS as any });
+
+    const req = new Request('https://dox402.example.com/documents/abc-123', { method: 'DELETE' });
+
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(401);
   });
 });

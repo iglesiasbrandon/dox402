@@ -10,6 +10,9 @@ import {
 import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billing';
 import { AdminWalletStatus, ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce, WalletRegistryEntry } from './types';
 import { MIGRATIONS } from './migrations';
+import { upsertDocument, queryRagContext, deleteDocumentVectors, computeEmbeddingCost } from './rag';
+import { RAG_MAX_DOCUMENT_SIZE, RAG_MAX_DOCUMENTS } from './constants';
+import { DocumentUploadRequest, DocumentMeta } from './types';
 
 export class InferenceGate extends DurableObject<Env> {
   /** Wallet address — loaded once per activation via blockConcurrencyWhile() */
@@ -220,9 +223,23 @@ export class InferenceGate extends DurableObject<Env> {
       { role: 'user', content: body.prompt },
     ];
 
+    // RAG context injection (opt-in)
+    let ragCost = 0;
+    if (body.useRag) {
+      try {
+        const ragContext = await queryRagContext(this.env, this.wallet, body.prompt);
+        if (ragContext) {
+          messages.unshift({ role: 'system' as const, content: ragContext.systemMessage });
+          ragCost = ragContext.queryCost;
+        }
+      } catch (err) {
+        console.error('[InferenceGate] RAG query failed:', err instanceof Error ? err.message : String(err));
+      }
+    }
+
     // Step 3: No proof but has balance → run inference (cost deducted post-stream)
     if (!paymentSignature) {
-      return this.inferAndLog(body, balance, messages);
+      return this.inferAndLog(body, balance, messages, false, ragCost);
     }
 
     // Step 4: Parse the proof from the payment signature
@@ -324,10 +341,10 @@ export class InferenceGate extends DurableObject<Env> {
     }
 
     // Step 9: Run inference (balance deducted async after stream)
-    return this.inferAndLog(body, newBalance, messages, isProvisional);
+    return this.inferAndLog(body, newBalance, messages, isProvisional, ragCost);
   }
 
-  private async inferAndLog(body: InferRequest, balance: number, messages: ConversationMessage[], provisional = false): Promise<Response> {
+  private async inferAndLog(body: InferRequest, balance: number, messages: ConversationMessage[], provisional = false, ragCostMicroUSDC = 0): Promise<Response> {
     // Run Workers AI inference (falls back to mock in local dev when AI binding is unavailable)
     let stream: ReadableStream;
     try {
@@ -446,7 +463,7 @@ export class InferenceGate extends DurableObject<Env> {
       const outputChars = responseText.length;
 
       // Deduct actual cost from balance (uses char-count fallback if token usage is zero)
-      const cost = computeCostMicroUSDC(usage, body.model ?? AI_MODEL, { inputChars, outputChars });
+      const cost = computeCostMicroUSDC(usage, body.model ?? AI_MODEL, { inputChars, outputChars }) + ragCostMicroUSDC;
       this.sql.exec(
         `UPDATE wallet_state SET
          balance = MAX(0, balance - ?),
@@ -649,6 +666,126 @@ export class InferenceGate extends DurableObject<Env> {
       JSON.stringify({ ok: true }),
       { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
     );
+  }
+
+  async handleDocumentUpload(body: DocumentUploadRequest, wallet: string): Promise<Response> {
+    // Persist wallet on first request (same pattern as handleInfer lines 193-198)
+    if (!this.wallet) {
+      this.wallet = wallet;
+      this.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', wallet);
+      this.registerInKV(wallet);
+    }
+
+    const limited = this.checkRateLimit();
+    if (limited) return limited;
+
+    // Validate input
+    if (!body.title || body.title.length > 200) {
+      return Response.json({ error: 'Title required (max 200 chars)' }, { status: 400 });
+    }
+    if (!body.content || body.content.length > RAG_MAX_DOCUMENT_SIZE) {
+      return Response.json({ error: `Content required (max ${RAG_MAX_DOCUMENT_SIZE} bytes)` }, { status: 400 });
+    }
+
+    // Check document limit
+    const countRow = this.sql.exec<{ cnt: number }>('SELECT COUNT(*) as cnt FROM documents').one();
+    if (countRow.cnt >= RAG_MAX_DOCUMENTS) {
+      return Response.json({ error: `Maximum ${RAG_MAX_DOCUMENTS} documents per wallet` }, { status: 409 });
+    }
+
+    // Check balance for embedding cost
+    const embeddingCost = computeEmbeddingCost(body.content.length);
+    const walletRow = this.sql.exec<{ balance: number }>('SELECT balance FROM wallet_state WHERE id = 1').one();
+    if (walletRow.balance < embeddingCost) {
+      return Response.json({ error: 'Insufficient balance for embedding cost', embeddingCost }, { status: 402 });
+    }
+
+    // Generate document ID
+    const docId = crypto.randomUUID();
+
+    // Chunk + embed + upsert into Vectorize
+    const { chunks, embeddingCost: actualCost } = await upsertDocument(this.env, this.wallet, docId, body.content);
+
+    // Persist to SQL atomically
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        `INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        docId, body.title, body.content, body.content.length, chunks.length, actualCost, Date.now(),
+      );
+
+      for (const chunk of chunks) {
+        this.sql.exec(
+          'INSERT INTO document_chunks (chunk_id, document_id, chunk_index, chunk_text) VALUES (?, ?, ?, ?)',
+          chunk.id, docId, chunk.index, chunk.text,
+        );
+      }
+
+      this.sql.exec(
+        'UPDATE wallet_state SET balance = MAX(0, balance - ?), total_spent = total_spent + ?, last_used_at = ? WHERE id = 1',
+        actualCost, actualCost, Date.now(),
+      );
+    });
+
+    const meta: DocumentMeta = {
+      id: docId,
+      title: body.title,
+      charCount: body.content.length,
+      chunkCount: chunks.length,
+      createdAt: Date.now(),
+      embeddingCostMicroUSDC: actualCost,
+    };
+
+    return Response.json(meta, { status: 201 });
+  }
+
+  async handleDocumentList(): Promise<Response> {
+    const limited = this.checkRateLimit();
+    if (limited) return limited;
+
+    const rows = this.sql.exec<{
+      id: string; title: string; char_count: number;
+      chunk_count: number; embedding_cost: number; created_at: number;
+    }>('SELECT id, title, char_count, chunk_count, embedding_cost, created_at FROM documents ORDER BY created_at DESC').toArray();
+
+    const documents: DocumentMeta[] = rows.map(r => ({
+      id: r.id,
+      title: r.title,
+      charCount: r.char_count,
+      chunkCount: r.chunk_count,
+      createdAt: r.created_at,
+      embeddingCostMicroUSDC: r.embedding_cost,
+    }));
+
+    return Response.json({ documents });
+  }
+
+  async handleDocumentDelete(documentId: string): Promise<Response> {
+    const limited = this.checkRateLimit();
+    if (limited) return limited;
+
+    // Check document exists
+    const docRows = this.sql.exec<{ id: string }>('SELECT id FROM documents WHERE id = ?', documentId).toArray();
+    if (docRows.length === 0) {
+      return Response.json({ error: 'Document not found' }, { status: 404 });
+    }
+
+    // Get chunk IDs for Vectorize deletion
+    const chunkRows = this.sql.exec<{ chunk_id: string }>(
+      'SELECT chunk_id FROM document_chunks WHERE document_id = ?', documentId,
+    ).toArray();
+    const chunkIds = chunkRows.map(r => r.chunk_id);
+
+    // Delete from Vectorize
+    if (chunkIds.length > 0) {
+      await deleteDocumentVectors(this.env, chunkIds);
+    }
+
+    // Delete from SQL
+    this.sql.exec('DELETE FROM document_chunks WHERE document_id = ?', documentId);
+    this.sql.exec('DELETE FROM documents WHERE id = ?', documentId);
+
+    return Response.json({ ok: true, deletedChunks: chunkIds.length });
   }
 
   // ── Admin: detailed status (not rate-limited — behind admin auth at router) ─

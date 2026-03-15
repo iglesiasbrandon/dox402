@@ -324,6 +324,62 @@
         }
       }
     },
+    "/documents": {
+      "post": {
+        "summary": "Upload a document for RAG",
+        "operationId": "postDocument",
+        "description": "Upload a text document to be chunked, embedded, and stored in Vectorize for retrieval-augmented generation. Embedding cost is deducted from wallet balance. Max 50 documents per wallet, max 100KB per document.",
+        "security": [{ "BearerAuth": [] }, { "CookieAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title", "content"],
+                "properties": {
+                  "title": { "type": "string", "maxLength": 200, "description": "Document title (max 200 chars)" },
+                  "content": { "type": "string", "maxLength": 102400, "description": "Raw text content (max 100KB)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Document uploaded and embedded", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DocumentMeta" } } } },
+          "400": { "description": "Invalid input (missing title/content or content too large)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "401": { "description": "Missing or invalid session token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "402": { "description": "Insufficient balance for embedding cost", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "409": { "description": "Document limit reached (max 50 per wallet)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "get": {
+        "summary": "List uploaded documents",
+        "operationId": "getDocuments",
+        "description": "Returns metadata for all documents uploaded by this wallet, ordered by creation date (newest first).",
+        "security": [{ "BearerAuth": [] }, { "CookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Document list", "content": { "application/json": { "schema": { "type": "object", "properties": { "documents": { "type": "array", "items": { "$ref": "#/components/schemas/DocumentMeta" } } } } } } },
+          "401": { "description": "Missing or invalid session token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/documents/{documentId}": {
+      "delete": {
+        "summary": "Delete a document and its embeddings",
+        "operationId": "deleteDocument",
+        "description": "Deletes a document, its chunks from SQL, and its vectors from Vectorize. Does not refund the embedding cost.",
+        "security": [{ "BearerAuth": [] }, { "CookieAuth": [] }],
+        "parameters": [
+          { "name": "documentId", "in": "path", "required": true, "description": "UUID of the document to delete", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Document deleted", "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "type": "boolean", "const": true }, "deletedChunks": { "type": "integer", "description": "Number of vector chunks removed" } } } } } },
+          "401": { "description": "Missing or invalid session token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "Document not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
     "/admin/wallets": {
       "get": {
         "summary": "List registered wallets",
@@ -420,7 +476,8 @@
           "prompt": { "type": "string", "description": "The user prompt for AI text generation" },
           "walletAddress": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$", "description": "Must match the authenticated wallet address" },
           "maxTokens": { "type": "integer", "default": 512, "maximum": 2048, "description": "Maximum tokens to generate" },
-          "model": { "type": "string", "default": "@cf/meta/llama-3.1-8b-instruct", "enum": ["@cf/meta/llama-3.1-8b-instruct", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/google/gemma-3-12b-it", "@cf/mistral/mistral-7b-instruct-v0.2", "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"], "description": "Workers AI model ID" }
+          "model": { "type": "string", "default": "@cf/meta/llama-3.1-8b-instruct", "enum": ["@cf/meta/llama-3.1-8b-instruct", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/google/gemma-3-12b-it", "@cf/mistral/mistral-7b-instruct-v0.2", "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"], "description": "Workers AI model ID" },
+          "useRag": { "type": "boolean", "default": false, "description": "Opt-in RAG augmentation. When true, the user prompt is embedded and matched against uploaded documents to inject relevant context." }
         }
       },
       "DepositRequest": {
@@ -506,6 +563,18 @@
           "pendingCount": { "type": "integer", "description": "Number of pending payment re-verifications" },
           "nonceCount": { "type": "integer", "description": "Number of active SIWE nonces" },
           "seenTxCount": { "type": "integer", "description": "Number of replay-prevention entries" }
+        }
+      },
+      "DocumentMeta": {
+        "type": "object",
+        "description": "Metadata for an uploaded RAG document",
+        "properties": {
+          "id": { "type": "string", "description": "Document UUID" },
+          "title": { "type": "string", "description": "Document title" },
+          "charCount": { "type": "integer", "description": "Character count of the original text" },
+          "chunkCount": { "type": "integer", "description": "Number of text chunks created for embedding" },
+          "createdAt": { "type": "integer", "description": "Unix timestamp (ms) when the document was uploaded" },
+          "embeddingCostMicroUSDC": { "type": "integer", "description": "Embedding cost deducted from balance in uUSDC" }
         }
       },
       "ConversationMessage": {

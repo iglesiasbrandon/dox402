@@ -48,3 +48,17 @@ export const ALLOWED_MODELS: Record<string, string> = {
   '@cf/mistral/mistral-7b-instruct-v0.2':          'Mistral 7B',
   '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b':   'DeepSeek R1 32B',
 };
+
+// ── RAG (Retrieval-Augmented Generation) configuration ────────────────────────
+export const RAG_CHUNK_CHAR_SIZE      = 1600;       // ~400 tokens at 4 chars/token
+export const RAG_CHUNK_CHAR_OVERLAP   = 200;        // ~50 tokens overlap between chunks
+export const RAG_TOP_K                = 5;           // top chunks retrieved per query
+export const RAG_MIN_SCORE            = 0.65;        // minimum cosine similarity to include
+export const RAG_MAX_CONTEXT_CHARS    = 8000;        // max total chars injected as system context
+export const RAG_MAX_DOCUMENT_SIZE    = 102_400;     // 100KB max document upload
+export const RAG_MAX_DOCUMENTS        = 50;          // max documents per wallet
+export const RAG_EMBEDDING_MODEL      = '@cf/baai/bge-base-en-v1.5' as const;
+export const RAG_EMBEDDING_DIMENSIONS = 768;
+export const RAG_EMBEDDING_BATCH_SIZE = 100;         // max texts per AI.run() call
+// bge-base-en-v1.5 neuron rate: ~6,058 neurons per 1M input tokens (input-only model)
+export const RAG_EMBEDDING_NEURON_RATE = 6058;

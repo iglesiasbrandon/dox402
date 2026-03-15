@@ -76,6 +76,31 @@ Cloudflare Durable Objects pricing:
 
 **Per-request Workers overhead: ~$0.0000003** (negligible)
 
+### 4. Workers AI Embeddings (RAG document upload)
+
+When users upload documents for RAG, the text is chunked and embedded using `@cf/baai/bge-base-en-v1.5`:
+
+| Metric | Value |
+|--------|-------|
+| Neuron rate | 6,058 neurons / 1M input tokens |
+| Cost per 1M tokens | $0.011 × 6,058 / 1M = ~$0.000067 |
+| Typical 10KB document (~2,500 tokens) | ~0.015 neurons → ~1 µUSDC after margin |
+| Typical RAG query embedding (~50 tokens) | negligible → ~1 µUSDC (minimum) |
+
+Embedding cost is billed upfront at document upload. The RAG query embedding cost is added to the inference bill.
+
+### 5. Cloudflare Vectorize (RAG vector storage)
+
+| Component | Rate | Notes |
+|-----------|------|-------|
+| Storage | $0.05 / 100M stored dimensions | Free tier: 5M dims/month |
+| Queries | $0.01 / 1M queried dimensions | Free tier: 30M dims/month |
+
+Per document (10KB → ~7 chunks × 768 dims): 5,376 stored dimensions.
+Per RAG query (1 query × 768 dims): ~768 queried dimensions.
+
+At typical scale, **Vectorize costs are well within the free tier** and negligible.
+
 ### Free Tier Offsets
 
 Cloudflare Workers paid plan ($5/month) includes generous free allowances:
@@ -164,7 +189,32 @@ TARGET_MARGIN       = 0.15  // target gross margin (15%)
 | Workers overhead per request | ~0.3 µUSDC |
 | **Total COGS per request** | **5.3–15.7 µUSDC** |
 | **Gross margin per request** | **+15% to +34%** |
+| Embedding COGS per document upload | ~1–2 µUSDC |
+| RAG query COGS per inference | ~1 µUSDC (embedding) + model-dependent context cost |
+| Vectorize storage/query | negligible at current scale |
 | Fixed costs per month | ~$6.00 |
+
+---
+
+## RAG Cost Impact
+
+RAG adds two cost components to inference:
+
+| Component | Per Request | Per Upload |
+|-----------|-------------|------------|
+| RAG query embedding (prompt) | ~1 µUSDC | — |
+| Extra LLM input tokens (~2,000 context) | +2–8 µUSDC depending on model | — |
+| Document embedding (all chunks) | — | ~1–2 µUSDC per 10KB |
+| Vectorize storage/query | negligible | negligible |
+
+**RAG-on vs RAG-off margin comparison** (Llama 3.1 8B, 500 input + 300 output tokens):
+
+| Mode | Input Tokens | Revenue | Total COGS | Gross Margin |
+|------|-------------|---------|------------|-------------|
+| RAG off | 500 | 8 µUSDC | 5.6 µUSDC | +30% |
+| RAG on | ~2,500 (incl. context) | 10 µUSDC | 7.4 µUSDC | +26% |
+
+The pricing formula automatically adjusts — higher input token counts produce proportionally higher revenue, maintaining positive margin.
 
 ---
 

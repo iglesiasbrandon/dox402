@@ -1,5 +1,5 @@
 import { InferenceGate } from './dox402';
-import { Env, InferRequest, DepositRequest, AdminWalletStatus, WalletRegistryEntry } from './types';
+import { Env, InferRequest, DepositRequest, DocumentUploadRequest, AdminWalletStatus, WalletRegistryEntry } from './types';
 import { USDC_CONTRACT } from './constants';
 import { verifySiweLogin } from './siwe';
 import { createSessionToken, verifySessionToken, TOKEN_EXPIRY_SECS, buildSessionCookie, buildClearCookie, parseCookieToken } from './session';
@@ -431,6 +431,49 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
 
       const stub = getTypedStub(env, authWallet);
       return stub.handleClearHistory();
+    }
+
+    // POST /documents — upload a text document for RAG
+    if (url.pathname === '/documents' && request.method === 'POST') {
+      const authWallet = await extractAuthWallet(request, env);
+      if (!authWallet) return unauthorized();
+
+      let body: { title?: string; content?: string };
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+      }
+
+      if (!body.title || !body.content) {
+        return Response.json({ error: 'Missing title or content' }, { status: 400 });
+      }
+
+      const stub = getTypedStub(env, authWallet);
+      return stub.handleDocumentUpload({ title: body.title, content: body.content }, authWallet);
+    }
+
+    // GET /documents — list uploaded documents
+    if (url.pathname === '/documents' && request.method === 'GET') {
+      const authWallet = await extractAuthWallet(request, env);
+      if (!authWallet) return unauthorized();
+
+      const stub = getTypedStub(env, authWallet);
+      return stub.handleDocumentList();
+    }
+
+    // DELETE /documents/:id — delete a document and its embeddings
+    if (url.pathname.startsWith('/documents/') && request.method === 'DELETE') {
+      const authWallet = await extractAuthWallet(request, env);
+      if (!authWallet) return unauthorized();
+
+      const docId = url.pathname.slice('/documents/'.length);
+      if (!docId) {
+        return Response.json({ error: 'Missing document ID' }, { status: 400 });
+      }
+
+      const stub = getTypedStub(env, authWallet);
+      return stub.handleDocumentDelete(docId);
     }
 
     return new Response('Not found', { status: 404 });

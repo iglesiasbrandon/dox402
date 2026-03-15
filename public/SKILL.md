@@ -46,6 +46,9 @@ After login via either method, all authenticated endpoints use the `ig_session` 
 | GET | /balance | Cookie | Credit balance and usage stats |
 | GET | /history | Cookie | Conversation messages |
 | DELETE | /history | Cookie | Clear conversation |
+| POST | /documents | Cookie | Upload document for RAG (embedding deducted from balance) |
+| GET | /documents | Cookie | List uploaded documents |
+| DELETE | /documents/:id | Cookie | Delete document + embeddings |
 
 ### Admin Endpoints
 
@@ -112,6 +115,18 @@ curl -N -b cookies.txt -X POST https://inference-gate.iglesias-brandon.workers.d
 # 6. Logout
 curl -s -b cookies.txt -X POST https://inference-gate.iglesias-brandon.workers.dev/auth/logout
 ```
+
+## RAG (Retrieval-Augmented Generation)
+
+Upload text documents to create a per-wallet knowledge base. Documents are chunked, embedded via Workers AI (`bge-base-en-v1.5`), and stored in Cloudflare Vectorize. When `useRag: true` is set on `/infer` requests, relevant document chunks are retrieved and injected as system context.
+
+**Upload:** `POST /documents` with `{title, content}` — content is plain text, max 100KB, max 50 documents per wallet. Embedding cost is deducted from balance at upload.
+
+**Query:** Set `useRag: true` in your `/infer` request body. The prompt is embedded, matched against your documents via cosine similarity (top-5 chunks, min score 0.65), and injected as a system message. RAG failure is non-fatal — inference proceeds without context.
+
+**Delete:** `DELETE /documents/:id` removes the document and its Vectorize embeddings.
+
+**Supported file types (UI):** `.txt`, `.md`, `.csv`, `.json`, `.html` — read client-side, sent as plain text.
 
 ## Machine-Readable Specs
 
