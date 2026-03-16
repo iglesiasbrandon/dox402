@@ -121,6 +121,12 @@
     }
     .mermaid { margin-top: 4px; }
     .mermaid svg { max-width: 100%; border-radius: 6px; }
+    .diagram-arrow { font-size: 10px; transition: transform 0.2s; display: inline-block; }
+    .diagram-toggle.open .diagram-arrow { transform: rotate(90deg); }
+    .diagram-toggle { cursor: pointer; display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text); font-size: 14px; user-select: none; padding: 2px 0; }
+    .diagram-toggle:hover { color: var(--accent); }
+    .diagram-body { display: none; }
+    .diagram-body.open { display: block; }
     .readme a { color: var(--accent); text-decoration: none; }
     .readme a:hover { text-decoration: underline; }
     .readme a code { color: var(--accent); background: rgba(246, 130, 31, 0.12); }
@@ -569,33 +575,90 @@
       </div>
 
       <div class="readme-section">
-        <div class="readme-h">Request flow</div>
-        <div class="mermaid">
+        <div class="readme-h">Request flow diagrams</div>
+        <div class="diagram-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+          <span class="diagram-arrow">▶</span> Authentication
+        </div>
+        <div class="diagram-body">
+          <div class="mermaid">
 sequenceDiagram
     participant C as Client
     participant W as Worker
     participant DO as Durable Object
-    participant S as Storage
-    participant AI as Workers AI
     C->>W: GET /auth/nonce
     W->>DO: RPC handleNonce()
-    DO-->>C: { nonce }
-    C->>W: POST /auth/login {message, sig}
-    W->>W: recover address (EIP-191)
-    W->>DO: RPC handleVerifyNonce(nonce)
-    W-->>C: Set-Cookie: ig_session + { expiresAt }
-    C->>W: POST /infer + cookie
-    W->>W: verify session cookie
-    W->>DO: RPC handleInfer(body, wallet)
-    Note over DO,S: blockConcurrencyWhile() loads wallet on activation
-    DO->>S: get balance + history
-    DO->>AI: messages[...history, prompt]
-    AI-->>C: SSE stream
-    DO-->>S: waitUntil → save reply + meta
+    DO-->>C: nonce
+    C->>W: POST /auth/login
+    W->>W: recover address [EIP-191]
+    W->>DO: RPC handleVerifyNonce
+    W-->>C: Set-Cookie ig_session
+          </div>
+          <p style="font-size:12px;color:var(--muted);line-height:1.55;margin:8px 0 0 0">
+            <strong style="color:var(--text)">SIWE (default):</strong> The flow above shows standard <a href="https://eips.ethereum.org/EIPS/eip-4361" target="_blank">Sign-In with Ethereum</a> (EIP-4361). The client requests a nonce, signs a message with their wallet, and receives a session cookie for subsequent authenticated requests.
+          </p>
+          <p style="font-size:12px;color:var(--muted);line-height:1.55;margin:4px 0 0 0">
+            <strong style="color:var(--text)">SIWX alternative:</strong> x402-compatible clients can skip the nonce/login steps and pass a <code>SIGN-IN-WITH-X</code> header on <code>POST /infer</code> for single-request wallet auth. The 402 response advertises this via a <code>sign-in-with-x</code> extension.
+          </p>
         </div>
-        <p style="font-size:12px;color:var(--muted);line-height:1.55;margin:4px 0 0 0">
-          <strong style="color:var(--text)">SIWX alternative:</strong> x402-compatible clients can skip the nonce/login steps and pass a <code>SIGN-IN-WITH-X</code> header on <code>POST /infer</code> for single-request wallet auth. The 402 response advertises this via a <code>sign-in-with-x</code> extension.
-        </p>
+
+        <div class="diagram-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+          <span class="diagram-arrow">▶</span> Inference (with RAG)
+        </div>
+        <div class="diagram-body">
+          <div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant W as Worker
+    participant DO as Durable Object
+    participant V as Vectorize
+    participant AI as Workers AI
+    C->>W: POST /infer + cookie
+    W->>W: verify session
+    W->>DO: RPC handleInfer
+    DO->>DO: load balance + history
+    alt useRag enabled
+        DO->>AI: embed prompt
+        AI-->>DO: query vector
+        DO->>V: query vector + wallet filter
+        V-->>DO: matching chunks
+        alt no chunks found
+            DO->>DO: SQL fallback - full docs
+        end
+        DO->>DO: inject files as system msg
+    end
+    DO->>DO: validate tokens vs context window
+    alt over limit
+        DO-->>C: 413 input too large
+    end
+    DO->>AI: messages array
+    AI-->>C: SSE stream
+    DO->>DO: save reply + deduct cost
+          </div>
+        </div>
+
+        <div class="diagram-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+          <span class="diagram-arrow">▶</span> File upload (RAG)
+        </div>
+        <div class="diagram-body">
+          <div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant W as Worker
+    participant DO as Durable Object
+    participant V as Vectorize
+    participant AI as Workers AI
+    C->>W: POST /documents
+    W->>DO: RPC handleDocumentUpload
+    DO->>DO: save to SQLite
+    DO->>DO: chunk text
+    DO->>AI: embed chunks
+    AI-->>DO: vectors
+    DO->>V: upsert vectors + metadata
+    V-->>DO: ok
+    DO-->>C: doc id + title + cost
+          </div>
+        </div>
+
       </div>
 
       <div class="readme-section">
@@ -622,12 +685,7 @@ POST   /documents         upload document for RAG
 GET    /documents         list uploaded documents
 DELETE /documents/:id     delete document + embeddings
 POST   /documents/reindex re-upsert all document vectors
-
-<strong>Admin (Bearer ADMIN_SECRET)</strong>
-GET    /admin/wallets              paginated wallet list
-GET    /admin/wallets/:addr/status detailed DO status
-GET    /admin/stats                total wallet count
-GET    /admin/stale                find inactive wallets</pre>
+</pre>
       </div>
 
       <div class="readme-section">
@@ -1936,7 +1994,7 @@ GET    /admin/stale                find inactive wallets</pre>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <script>
   mermaid.initialize({
-    startOnLoad: true,
+    startOnLoad: false,
     theme: 'base',
     themeVariables: {
       background:            '#181818',
@@ -1964,6 +2022,20 @@ GET    /admin/stale                find inactive wallets</pre>
       fontFamily:            'ui-monospace, SFMono-Regular, monospace',
       fontSize:              '12px',
     },
+  });
+
+  // Render mermaid diagrams on first toggle open
+  document.querySelectorAll('.diagram-toggle').forEach(toggle => {
+    toggle.addEventListener('click', async () => {
+      const body = toggle.nextElementSibling;
+      if (!body) return;
+      const el = body.querySelector('.mermaid');
+      if (!el || el.dataset.rendered) return;
+      el.dataset.rendered = '1';
+      const id = 'mmd-' + Math.random().toString(36).slice(2, 8);
+      const { svg } = await mermaid.render(id, el.textContent.trim());
+      el.innerHTML = svg;
+    });
   });
 </script>
 </body>

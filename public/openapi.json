@@ -394,66 +394,6 @@
         }
       }
     },
-    "/admin/wallets": {
-      "get": {
-        "summary": "List registered wallets",
-        "operationId": "getAdminWallets",
-        "description": "Paginated list of all wallet addresses registered in the KV registry.",
-        "security": [{ "AdminAuth": [] }],
-        "parameters": [
-          { "name": "limit", "in": "query", "required": false, "description": "Max wallets to return (1-1000, default 100)", "schema": { "type": "integer", "default": 100 } },
-          { "name": "cursor", "in": "query", "required": false, "description": "Pagination cursor from a previous response", "schema": { "type": "string" } }
-        ],
-        "responses": {
-          "200": { "description": "Paginated wallet list", "content": { "application/json": { "schema": { "type": "object", "properties": { "wallets": { "type": "array", "items": { "type": "object", "properties": { "wallet": { "type": "string" } } } }, "cursor": { "type": "string", "nullable": true }, "hasMore": { "type": "boolean" } } } } } },
-          "401": { "description": "Missing or invalid admin token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
-          "503": { "description": "ADMIN_SECRET not configured", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
-        }
-      }
-    },
-    "/admin/wallets/{wallet}/status": {
-      "get": {
-        "summary": "Get detailed wallet DO status",
-        "operationId": "getAdminWalletStatus",
-        "description": "Returns detailed Durable Object status for a specific wallet.",
-        "security": [{ "AdminAuth": [] }],
-        "parameters": [{ "name": "wallet", "in": "path", "required": true, "description": "Ethereum wallet address (0x + 40 hex chars)", "schema": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" } }],
-        "responses": {
-          "200": { "description": "Detailed wallet status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminWalletStatus" } } } },
-          "400": { "description": "Invalid wallet address format", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
-          "401": { "description": "Missing or invalid admin token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
-        }
-      }
-    },
-    "/admin/stats": {
-      "get": {
-        "summary": "Aggregate statistics",
-        "operationId": "getAdminStats",
-        "description": "Returns the total number of registered wallets.",
-        "security": [{ "AdminAuth": [] }],
-        "responses": {
-          "200": { "description": "Aggregate stats", "content": { "application/json": { "schema": { "type": "object", "properties": { "totalWallets": { "type": "integer" } } } } } },
-          "401": { "description": "Missing or invalid admin token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
-        }
-      }
-    },
-    "/admin/stale": {
-      "get": {
-        "summary": "Find stale wallets",
-        "operationId": "getAdminStale",
-        "description": "Identifies zero-balance inactive wallets by fan-out querying each DO instance.",
-        "security": [{ "AdminAuth": [] }],
-        "parameters": [
-          { "name": "inactive_days", "in": "query", "required": false, "description": "Consider wallets inactive if not used in this many days (default 30)", "schema": { "type": "integer", "default": 30 } },
-          { "name": "max_balance", "in": "query", "required": false, "description": "Only include wallets with balance at or below this value in uUSDC (default 0)", "schema": { "type": "integer", "default": 0 } },
-          { "name": "limit", "in": "query", "required": false, "description": "Max stale wallets to return (1-200, default 50)", "schema": { "type": "integer", "default": 50 } }
-        ],
-        "responses": {
-          "200": { "description": "Stale wallets matching criteria", "content": { "application/json": { "schema": { "type": "object", "properties": { "stale": { "type": "array", "items": { "$ref": "#/components/schemas/AdminWalletStatus" } }, "count": { "type": "integer" }, "criteria": { "type": "object", "properties": { "inactiveDays": { "type": "integer" }, "maxBalance": { "type": "integer" }, "limit": { "type": "integer" } } } } } } } },
-          "401": { "description": "Missing or invalid admin token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
-        }
-      }
-    }
   },
   "components": {
     "securitySchemes": {
@@ -474,11 +414,6 @@
         "in": "header",
         "name": "SIGN-IN-WITH-X",
         "description": "Base64-encoded SIWX payload for single-request authentication (x402 SIWX spec). Contains {message, signature, chainId, type, address}. Server sets ig_session cookie in the response for subsequent requests."
-      },
-      "AdminAuth": {
-        "type": "http",
-        "scheme": "bearer",
-        "description": "Admin secret token set via ADMIN_SECRET environment variable. Used for admin/ops endpoints only."
       }
     },
     "schemas": {
@@ -559,24 +494,6 @@
           "totalRequests": { "type": "integer" },
           "totalFailedRequests": { "type": "integer", "description": "Requests where billing was skipped (AI failure, empty response, stream error)" },
           "provisionalMicroUSDC": { "type": "integer", "description": "Outstanding provisionally credited uUSDC pending RPC re-verification" }
-        }
-      },
-      "AdminWalletStatus": {
-        "type": "object",
-        "description": "Detailed status of a single wallet's Durable Object instance",
-        "properties": {
-          "walletAddress": { "type": "string" },
-          "balance": { "type": "integer", "description": "Current credit balance in uUSDC" },
-          "totalDeposited": { "type": "integer" },
-          "totalSpent": { "type": "integer" },
-          "totalRequests": { "type": "integer" },
-          "totalFailedRequests": { "type": "integer" },
-          "provisionalBalance": { "type": "integer", "description": "Outstanding provisional credits in uUSDC" },
-          "lastUsedAt": { "type": "integer", "nullable": true, "description": "Unix timestamp (ms) of last request, or null if never used" },
-          "historyCount": { "type": "integer", "description": "Number of conversation messages stored" },
-          "pendingCount": { "type": "integer", "description": "Number of pending payment re-verifications" },
-          "nonceCount": { "type": "integer", "description": "Number of active SIWE nonces" },
-          "seenTxCount": { "type": "integer", "description": "Number of replay-prevention entries" }
         }
       },
       "DocumentMeta": {

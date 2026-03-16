@@ -812,22 +812,41 @@ export class InferenceGate extends DurableObject<Env> {
     const limited = this.checkRateLimit();
     if (limited) return limited;
 
-    // Re-upsert all document vectors (fixes metadata index issues after index creation)
+    // Step 1: Delete ALL known vectors from Vectorize
+    const oldChunks = this.sql.exec<{ chunk_id: string }>(
+      'SELECT chunk_id FROM document_chunks',
+    ).toArray();
+    if (oldChunks.length > 0) {
+      await deleteDocumentVectors(this.env, oldChunks.map(r => r.chunk_id));
+    }
+
+    // Step 2: Clear the chunk tracking table
+    this.sql.exec('DELETE FROM document_chunks');
+
+    // Step 3: Re-upsert all current documents
     const docs = this.sql.exec<{ id: string; content: string }>(
       'SELECT id, content FROM documents',
     ).toArray();
 
     if (docs.length === 0) {
-      return Response.json({ ok: true, reindexed: 0 });
+      return Response.json({ ok: true, reindexed: 0, deletedOldVectors: oldChunks.length });
     }
 
     let totalChunks = 0;
     for (const doc of docs) {
       const { chunks } = await upsertDocument(this.env, this.wallet, doc.id, doc.content);
       totalChunks += chunks.length;
+
+      // Re-populate chunk tracking
+      for (const chunk of chunks) {
+        this.sql.exec(
+          'INSERT INTO document_chunks (chunk_id, document_id, chunk_index, chunk_text) VALUES (?, ?, ?, ?)',
+          chunk.id, doc.id, chunk.index, chunk.text,
+        );
+      }
     }
 
-    return Response.json({ ok: true, reindexed: docs.length, totalChunks });
+    return Response.json({ ok: true, reindexed: docs.length, totalChunks, deletedOldVectors: oldChunks.length });
   }
 
   async handleRagDebug(prompt: string): Promise<Response> {
@@ -886,12 +905,17 @@ export class InferenceGate extends DurableObject<Env> {
     const chunkRows = this.sql.exec<{ chunk_id: string }>(
       'SELECT chunk_id FROM document_chunks WHERE document_id = ?', documentId,
     ).toArray();
-    const chunkIds = chunkRows.map(r => r.chunk_id);
+    let chunkIds = chunkRows.map(r => r.chunk_id);
+
+    // Fallback: if no chunks tracked (legacy upload), generate IDs by convention
+    // Vectorize IDs follow pattern `${documentId}:${chunkIndex}`
+    if (chunkIds.length === 0) {
+      // Try up to 100 possible chunk indices to cover any doc size
+      chunkIds = Array.from({ length: 100 }, (_, i) => `${documentId}:${i}`);
+    }
 
     // Delete from Vectorize
-    if (chunkIds.length > 0) {
-      await deleteDocumentVectors(this.env, chunkIds);
-    }
+    await deleteDocumentVectors(this.env, chunkIds);
 
     // Delete from SQL
     this.sql.exec('DELETE FROM document_chunks WHERE document_id = ?', documentId);

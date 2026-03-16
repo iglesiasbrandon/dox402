@@ -51,17 +51,6 @@ After login via either method, all authenticated endpoints use the `ig_session` 
 | DELETE | /documents/:id | Cookie | Delete document + embeddings |
 | POST | /documents/reindex | Cookie | Re-upsert all document vectors |
 
-### Admin Endpoints
-
-All admin endpoints require `Authorization: Bearer <ADMIN_SECRET>`.
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | /admin/wallets | Admin | Paginated list of registered wallets (`?limit=&cursor=`) |
-| GET | /admin/wallets/:wallet/status | Admin | Detailed DO status for a specific wallet |
-| GET | /admin/stats | Admin | Total registered wallet count |
-| GET | /admin/stale | Admin | Find zero-balance inactive wallets (`?inactive_days=30&max_balance=0&limit=50`) |
-
 ## Models
 
 | Model ID | Name | Context Window | Cost |
