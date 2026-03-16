@@ -98,13 +98,23 @@ Authenticated endpoints accept either an `Authorization: Bearer <token>` header 
 | `DELETE /documents/:id` | Delete document + Vectorize embeddings |
 | `POST /documents/reindex` | Re-upsert all document vectors (fixes metadata indexing) |
 
-### Admin (requires `ADMIN_SECRET` Bearer token)
-| Endpoint | Description |
-|---|---|
-| `GET /admin/wallets` | Paginated wallet list from KV registry |
-| `GET /admin/wallets/:wallet/status` | Detailed DO status for a specific wallet |
-| `GET /admin/stats` | Total registered wallet count |
-| `GET /admin/stale` | Identify zero-balance inactive wallets |
+### SIWX (Single-Request Auth)
+
+x402-compatible clients can skip the nonce/login flow and pass a `SIGN-IN-WITH-X` header on `POST /infer` for stateless, single-request wallet authentication. The 402 response advertises supported chains via a `sign-in-with-x` extension.
+
+---
+
+## Models
+
+| Model | Context Window | Speed |
+|-------|---------------|-------|
+| Llama 3.1 8B | 7,968 tokens | Fast |
+| Llama 3.3 70B | 24,000 tokens | Medium |
+| Gemma 3 12B | 8,000 tokens | Fast |
+| Mistral 7B | 8,000 tokens | Fast |
+| DeepSeek R1 32B | 80,000 tokens | Medium |
+
+Total input (prompt + conversation history + RAG file context) is validated against the selected model's context window before inference. Requests exceeding the limit receive a `413` error.
 
 ---
 
