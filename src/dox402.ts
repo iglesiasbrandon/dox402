@@ -11,7 +11,7 @@ import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billi
 import { AdminWalletStatus, ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce, WalletRegistryEntry } from './types';
 import { MIGRATIONS } from './migrations';
 import { upsertDocument, queryRagContext, deleteDocumentVectors, computeEmbeddingCost } from './rag';
-import { RAG_MAX_DOCUMENT_SIZE, RAG_MAX_DOCUMENTS } from './constants';
+import { RAG_MAX_DOCUMENT_SIZE, RAG_MAX_DOCUMENTS, NEURON_RATES } from './constants';
 import { DocumentUploadRequest, DocumentMeta } from './types';
 
 export class InferenceGate extends DurableObject<Env> {
@@ -227,19 +227,61 @@ export class InferenceGate extends DurableObject<Env> {
     let ragCost = 0;
     let ragChunkCount = 0;
     if (body.useRag) {
+      let ragInjected = false;
       try {
         const ragContext = await queryRagContext(this.env, this.wallet, body.prompt);
         if (ragContext) {
           messages.unshift({ role: 'system' as const, content: ragContext.systemMessage });
           ragCost = ragContext.queryCost;
           ragChunkCount = ragContext.chunkCount;
-          console.log('[InferenceGate] RAG injected %d chunks (%d chars) for wallet %s',
+          ragInjected = true;
+          console.log('[InferenceGate] RAG injected %d chunks (%d chars) via Vectorize for wallet %s',
             ragContext.chunkCount, ragContext.systemMessage.length, this.wallet);
         } else {
-          console.log('[InferenceGate] RAG query returned no relevant chunks for wallet %s', this.wallet);
+          console.log('[InferenceGate] Vectorize returned no relevant chunks for wallet %s', this.wallet);
         }
       } catch (err) {
-        console.error('[InferenceGate] RAG query failed:', err instanceof Error ? err.message : String(err));
+        console.error('[InferenceGate] RAG Vectorize query failed:', err instanceof Error ? err.message : String(err));
+      }
+
+      // SQL fallback: if Vectorize returned nothing (eventual consistency lag or error),
+      // inject document content directly from SQLite so files are always available
+      if (!ragInjected) {
+        try {
+          const docs = this.sql.exec<{ title: string; content: string }>(
+            'SELECT title, content FROM documents ORDER BY created_at',
+          ).toArray();
+          if (docs.length > 0) {
+            const preamble =
+              'You have access to the following reference documents provided by the user. ' +
+              'Use them to inform your response if relevant, but do not mention them unless asked.';
+            let contextBody = '';
+            for (const doc of docs) {
+              contextBody += `\n---\n[${doc.title}]\n${doc.content}`;
+            }
+            if (contextBody.length > 0) {
+              const systemMessage = preamble + contextBody + '\n---';
+              messages.unshift({ role: 'system' as const, content: systemMessage });
+              ragChunkCount = docs.length;
+              console.log('[InferenceGate] RAG fallback: injected %d docs (%d chars) from SQL for wallet %s',
+                docs.length, systemMessage.length, this.wallet);
+            }
+          }
+        } catch (err) {
+          console.error('[InferenceGate] RAG SQL fallback failed:', err instanceof Error ? err.message : String(err));
+        }
+      }
+    }
+
+    // Validate total input against model's context window
+    const modelRates = NEURON_RATES[body.model || '@cf/meta/llama-3.1-8b-instruct'];
+    if (modelRates) {
+      const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+      const totalTokens = Math.ceil(totalChars / 4);
+      if (totalTokens > modelRates.contextWindow) {
+        return Response.json({
+          error: `Input too large for this model. Your input is ~${totalTokens.toLocaleString()} tokens but ${body.model || '@cf/meta/llama-3.1-8b-instruct'} supports ${modelRates.contextWindow.toLocaleString()} tokens. Try removing files, clearing history, or switching to a model with a larger context window.`,
+        }, { status: 413 });
       }
     }
 
@@ -764,6 +806,70 @@ export class InferenceGate extends DurableObject<Env> {
     }));
 
     return Response.json({ documents });
+  }
+
+  async handleDocumentReindex(): Promise<Response> {
+    const limited = this.checkRateLimit();
+    if (limited) return limited;
+
+    // Re-upsert all document vectors (fixes metadata index issues after index creation)
+    const docs = this.sql.exec<{ id: string; content: string }>(
+      'SELECT id, content FROM documents',
+    ).toArray();
+
+    if (docs.length === 0) {
+      return Response.json({ ok: true, reindexed: 0 });
+    }
+
+    let totalChunks = 0;
+    for (const doc of docs) {
+      const { chunks } = await upsertDocument(this.env, this.wallet, doc.id, doc.content);
+      totalChunks += chunks.length;
+    }
+
+    return Response.json({ ok: true, reindexed: docs.length, totalChunks });
+  }
+
+  async handleRagDebug(prompt: string): Promise<Response> {
+    const limited = this.checkRateLimit();
+    if (limited) return limited;
+
+    const { generateEmbeddings } = await import('./rag');
+    const [queryVector] = await generateEmbeddings(this.env, [prompt]);
+
+    // Query WITH wallet filter
+    const filtered = await this.env.VECTORIZE.query(queryVector, {
+      topK: 5,
+      returnMetadata: 'all',
+      filter: { wallet: { $eq: this.wallet } },
+    });
+
+    // Query WITHOUT wallet filter
+    const unfiltered = await this.env.VECTORIZE.query(queryVector, {
+      topK: 5,
+      returnMetadata: 'all',
+    });
+
+    // Get stored documents from SQL
+    const docs = this.sql.exec<{ id: string; title: string; char_count: number }>(
+      'SELECT id, title, char_count FROM documents',
+    ).toArray();
+
+    const chunks = this.sql.exec<{ chunk_id: string; document_id: string }>(
+      'SELECT chunk_id, document_id FROM document_chunks',
+    ).toArray();
+
+    return Response.json({
+      wallet: this.wallet,
+      sqlDocuments: docs,
+      sqlChunks: chunks.length,
+      filteredMatches: filtered.matches.map(m => ({
+        id: m.id, score: m.score, metadata: m.metadata,
+      })),
+      unfilteredMatches: unfiltered.matches.map(m => ({
+        id: m.id, score: m.score, metadata: m.metadata,
+      })),
+    });
   }
 
   async handleDocumentDelete(documentId: string): Promise<Response> {

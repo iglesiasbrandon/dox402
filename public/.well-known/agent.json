@@ -1,7 +1,7 @@
 {
   "name": "dox402",
   "description": "Pay-per-use AI inference gateway using x402 payment protocol. No signup, no API key -- authenticate with your Ethereum wallet (SIWE), pay with USDC on Base Mainnet, and get streamed AI responses from 5 models.",
-  "url": "https://dox402.iglesias-brandon.workers.dev",
+  "url": "https://inference-gate.iglesias-brandon.workers.dev",
   "provider": {
     "organization": "dox402",
     "url": "https://github.com/iglesiasbrandon/dox402"
@@ -43,6 +43,13 @@
       "name": "Payment Information",
       "description": "Get the USDC payment address, network (Base Mainnet), contract address, and minimum top-up amount. No authentication required.",
       "inputModes": [],
+      "outputModes": ["application/json"]
+    },
+    {
+      "id": "rag",
+      "name": "Document Knowledge Base (RAG)",
+      "description": "Upload text documents (.txt, .md, .csv, .json, .html) to create a per-wallet knowledge base. Documents are chunked, embedded, and stored in Vectorize. Enable useRag on inference to inject relevant context. Max 50 docs, 100KB each. Total input validated against model context window.",
+      "inputModes": ["application/json"],
       "outputModes": ["application/json"]
     }
   ],

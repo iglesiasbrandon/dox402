@@ -462,6 +462,25 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
       return stub.handleDocumentList();
     }
 
+    // GET /documents/debug — debug RAG pipeline (temporary)
+    if (url.pathname === '/documents/debug' && request.method === 'GET') {
+      const authWallet = await extractAuthWallet(request, env);
+      if (!authWallet) return unauthorized();
+
+      const prompt = url.searchParams.get('prompt') || 'test query';
+      const stub = getTypedStub(env, authWallet);
+      return stub.handleRagDebug(prompt);
+    }
+
+    // POST /documents/reindex — re-upsert all document vectors (fixes metadata index issues)
+    if (url.pathname === '/documents/reindex' && request.method === 'POST') {
+      const authWallet = await extractAuthWallet(request, env);
+      if (!authWallet) return unauthorized();
+
+      const stub = getTypedStub(env, authWallet);
+      return stub.handleDocumentReindex();
+    }
+
     // DELETE /documents/:id — delete a document and its embeddings
     if (url.pathname.startsWith('/documents/') && request.method === 'DELETE') {
       const authWallet = await extractAuthWallet(request, env);

@@ -31,12 +31,13 @@ export const SUPPORTED_CHAINS = [
 ] as const;
 
 // Neuron consumption rates per 1M tokens (from Cloudflare Workers AI pricing)
-export const NEURON_RATES: Record<string, { in: number; out: number }> = {
-  '@cf/meta/llama-3.1-8b-instruct':              { in: 25608,  out: 75147  },
-  '@cf/meta/llama-3.3-70b-instruct-fp8-fast':    { in: 26668,  out: 204805 },
-  '@cf/google/gemma-3-12b-it':                   { in: 25608,  out: 75147  },
-  '@cf/mistral/mistral-7b-instruct-v0.2':        { in: 10000,  out: 17300  },
-  '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b': { in: 45170,  out: 443756 },
+// contextWindow = max input tokens supported by the model (from Cloudflare docs)
+export const NEURON_RATES: Record<string, { in: number; out: number; contextWindow: number }> = {
+  '@cf/meta/llama-3.1-8b-instruct':              { in: 25608,  out: 75147,  contextWindow: 7968   },
+  '@cf/meta/llama-3.3-70b-instruct-fp8-fast':    { in: 26668,  out: 204805, contextWindow: 24000  },
+  '@cf/google/gemma-3-12b-it':                   { in: 25608,  out: 75147,  contextWindow: 8000   },
+  '@cf/mistral/mistral-7b-instruct-v0.2':        { in: 10000,  out: 17300,  contextWindow: 8000   },
+  '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b': { in: 45170,  out: 443756, contextWindow: 80000 },
 };
 
 // Allowlist of supported Workers AI text generation models.
@@ -53,8 +54,9 @@ export const ALLOWED_MODELS: Record<string, string> = {
 export const RAG_CHUNK_CHAR_SIZE      = 1600;       // ~400 tokens at 4 chars/token
 export const RAG_CHUNK_CHAR_OVERLAP   = 200;        // ~50 tokens overlap between chunks
 export const RAG_TOP_K                = 5;           // top chunks retrieved per query
-export const RAG_MIN_SCORE            = 0.65;        // minimum cosine similarity to include
-export const RAG_MAX_CONTEXT_CHARS    = 8000;        // max total chars injected as system context
+export const RAG_MIN_SCORE            = 0.45;        // minimum cosine similarity to include
+// RAG context is no longer hard-capped; instead the total input (prompt + history + files)
+// is validated against each model's contextWindow before inference.
 export const RAG_MAX_DOCUMENT_SIZE    = 102_400;     // 100KB max document upload
 export const RAG_MAX_DOCUMENTS        = 50;          // max documents per wallet
 export const RAG_EMBEDDING_MODEL      = '@cf/baai/bge-base-en-v1.5' as const;

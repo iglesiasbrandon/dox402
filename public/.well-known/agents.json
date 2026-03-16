@@ -2,7 +2,7 @@
   "version": "0.1.0",
   "name": "dox402",
   "description": "Pay-per-use AI inference gateway. Authenticate with Ethereum wallet, pay with USDC on Base Mainnet, get streamed AI responses.",
-  "url": "https://dox402.iglesias-brandon.workers.dev",
+  "url": "https://inference-gate.iglesias-brandon.workers.dev",
   "openapi": "/openapi.json",
   "authentication": {
     "type": "custom",
@@ -48,7 +48,8 @@
             "prompt": "$prompt",
             "walletAddress": "$walletAddress",
             "model": "$model",
-            "maxTokens": "$maxTokens"
+            "maxTokens": "$maxTokens",
+            "useRag": "$useRag"
           },
           "description": "Returns 200 with SSE stream if balance > 0. Returns 402 with payment instructions if balance is zero."
         }
@@ -68,6 +69,43 @@
             "totalDeposited": "$.totalDepositedMicroUSDC",
             "totalSpent": "$.totalSpentMicroUSDC",
             "totalRequests": "$.totalRequests"
+          }
+        }
+      ]
+    },
+    {
+      "name": "upload-document",
+      "description": "Upload a text document for RAG (retrieval-augmented generation). The document is chunked, embedded, and stored in Vectorize.",
+      "requires": ["authenticate"],
+      "steps": [
+        {
+          "endpoint": "/documents",
+          "method": "POST",
+          "headers": { "Authorization": "Bearer $token" },
+          "body": {
+            "title": "$documentTitle",
+            "content": "$documentContent"
+          },
+          "description": "Upload plain text content (max 100KB, max 50 docs per wallet). Embedding cost deducted from balance.",
+          "output": {
+            "id": "$.id",
+            "charCount": "$.charCount",
+            "chunkCount": "$.chunkCount"
+          }
+        }
+      ]
+    },
+    {
+      "name": "list-documents",
+      "description": "List all uploaded documents for this wallet",
+      "requires": ["authenticate"],
+      "steps": [
+        {
+          "endpoint": "/documents",
+          "method": "GET",
+          "headers": { "Authorization": "Bearer $token" },
+          "output": {
+            "documents": "$.documents"
           }
         }
       ]

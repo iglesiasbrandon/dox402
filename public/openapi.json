@@ -259,6 +259,7 @@
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentRequired" } } }
           },
           "403": { "description": "walletAddress in body does not match authenticated session", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "413": { "description": "Total input (prompt + history + RAG context) exceeds the selected model's context window", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
           "429": {
             "description": "Rate limit exceeded (60 requests per minute per wallet)",
             "headers": { "Retry-After": { "description": "Seconds until the rate limit window resets", "schema": { "type": "string" } } },
@@ -361,6 +362,19 @@
         "responses": {
           "200": { "description": "Document list", "content": { "application/json": { "schema": { "type": "object", "properties": { "documents": { "type": "array", "items": { "$ref": "#/components/schemas/DocumentMeta" } } } } } } },
           "401": { "description": "Missing or invalid session token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/documents/reindex": {
+      "post": {
+        "summary": "Re-upsert all document vectors",
+        "operationId": "postDocumentsReindex",
+        "description": "Re-embeds and re-upserts all documents for this wallet into Vectorize. Useful when Vectorize metadata indexes were created after initial vector upserts, making existing vectors unfilterable.",
+        "security": [{ "BearerAuth": [] }, { "CookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Reindex complete", "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "type": "boolean", "const": true }, "reindexed": { "type": "integer", "description": "Number of documents re-indexed" }, "totalChunks": { "type": "integer", "description": "Total vector chunks upserted" } } } } } },
+          "401": { "description": "Missing or invalid session token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "429": { "description": "Rate limit exceeded", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
         }
       }
     },

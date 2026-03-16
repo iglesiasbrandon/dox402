@@ -203,7 +203,7 @@ RAG adds two cost components to inference:
 | Component | Per Request | Per Upload |
 |-----------|-------------|------------|
 | RAG query embedding (prompt) | ~1 µUSDC | — |
-| Extra LLM input tokens (~2,000 context) | +2–8 µUSDC depending on model | — |
+| Extra LLM input tokens (RAG context) | variable, depends on document size and model | — |
 | Document embedding (all chunks) | — | ~1–2 µUSDC per 10KB |
 | Vectorize storage/query | negligible | negligible |
 
@@ -212,9 +212,10 @@ RAG adds two cost components to inference:
 | Mode | Input Tokens | Revenue | Total COGS | Gross Margin |
 |------|-------------|---------|------------|-------------|
 | RAG off | 500 | 8 µUSDC | 5.6 µUSDC | +30% |
-| RAG on | ~2,500 (incl. context) | 10 µUSDC | 7.4 µUSDC | +26% |
+| RAG on (small doc) | ~2,500 (incl. context) | 10 µUSDC | 7.4 µUSDC | +26% |
+| RAG on (large docs) | ~5,000 (incl. context) | 12 µUSDC | 9.2 µUSDC | +23% |
 
-The pricing formula automatically adjusts — higher input token counts produce proportionally higher revenue, maintaining positive margin.
+RAG context is no longer hard-capped; the total input (prompt + history + files) is validated against each model's context window (e.g. 7,968 tokens for Llama 3.1 8B, 80,000 for DeepSeek R1 32B). The pricing formula automatically adjusts — higher input token counts produce proportionally higher revenue, maintaining positive margin.
 
 ---
 

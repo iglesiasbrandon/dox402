@@ -7,7 +7,6 @@ import {
   RAG_CHUNK_CHAR_OVERLAP,
   RAG_TOP_K,
   RAG_MIN_SCORE,
-  RAG_MAX_CONTEXT_CHARS,
   RAG_EMBEDDING_MODEL,
   RAG_EMBEDDING_BATCH_SIZE,
   RAG_EMBEDDING_NEURON_RATE,
@@ -237,12 +236,19 @@ export async function queryRagContext(
     return null;
   }
 
-  // Extract text from metadata and build the system message
-  const chunkTexts = relevant
-    .map(m => (m.metadata as Record<string, unknown>)?.text as string)
-    .filter((t): t is string => typeof t === 'string' && t.length > 0);
+  // Group chunks by documentId to avoid the LLM seeing each chunk as a separate file
+  const docChunks = new Map<string, string[]>();
+  for (const m of relevant) {
+    const meta = m.metadata as Record<string, unknown>;
+    const text = meta?.text as string;
+    const docId = (meta?.documentId as string) || 'unknown';
+    if (typeof text === 'string' && text.length > 0) {
+      if (!docChunks.has(docId)) docChunks.set(docId, []);
+      docChunks.get(docId)!.push(text);
+    }
+  }
 
-  if (chunkTexts.length === 0) {
+  if (docChunks.size === 0) {
     return null;
   }
 
@@ -250,16 +256,17 @@ export async function queryRagContext(
     'You have access to the following reference documents provided by the user. ' +
     'Use them to inform your response if relevant, but do not mention them unless asked.';
 
-  let systemMessage = preamble + '\n\n---\n' + chunkTexts.join('\n---\n') + '\n---';
-
-  // Truncate to RAG_MAX_CONTEXT_CHARS
-  if (systemMessage.length > RAG_MAX_CONTEXT_CHARS) {
-    systemMessage = systemMessage.slice(0, RAG_MAX_CONTEXT_CHARS);
+  // Build one section per document (not per chunk)
+  const sections: string[] = [];
+  for (const [, chunks] of docChunks) {
+    sections.push(chunks.join('\n'));
   }
+
+  let systemMessage = preamble + '\n\n---\n' + sections.join('\n---\n') + '\n---';
 
   const queryCost = computeEmbeddingCost(prompt.length);
 
-  return { systemMessage, chunkCount: chunkTexts.length, queryCost };
+  return { systemMessage, chunkCount: docChunks.size, queryCost };
 }
 
 // ── Vector Deletion ──────────────────────────────────────────────────────────

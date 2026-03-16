@@ -49,6 +49,7 @@ After login via either method, all authenticated endpoints use the `ig_session` 
 | POST | /documents | Cookie | Upload document for RAG (embedding deducted from balance) |
 | GET | /documents | Cookie | List uploaded documents |
 | DELETE | /documents/:id | Cookie | Delete document + embeddings |
+| POST | /documents/reindex | Cookie | Re-upsert all document vectors |
 
 ### Admin Endpoints
 
@@ -63,13 +64,13 @@ All admin endpoints require `Authorization: Bearer <ADMIN_SECRET>`.
 
 ## Models
 
-| Model ID | Name | Cost |
-|----------|------|------|
-| @cf/meta/llama-3.1-8b-instruct | Llama 3.1 8B | ~8-10 uUSDC/request |
-| @cf/meta/llama-3.3-70b-instruct-fp8-fast | Llama 3.3 70B | ~9-13 uUSDC/request |
-| @cf/google/gemma-3-12b-it | Gemma 3 12B | ~8-10 uUSDC/request |
-| @cf/mistral/mistral-7b-instruct-v0.2 | Mistral 7B | ~4-6 uUSDC/request |
-| @cf/deepseek-ai/deepseek-r1-distill-qwen-32b | DeepSeek R1 32B | ~15-25 uUSDC/request |
+| Model ID | Name | Context Window | Cost |
+|----------|------|---------------|------|
+| @cf/meta/llama-3.1-8b-instruct | Llama 3.1 8B | 7,968 tokens | ~8-10 uUSDC/request |
+| @cf/meta/llama-3.3-70b-instruct-fp8-fast | Llama 3.3 70B | 24,000 tokens | ~9-13 uUSDC/request |
+| @cf/google/gemma-3-12b-it | Gemma 3 12B | 8,000 tokens | ~8-10 uUSDC/request |
+| @cf/mistral/mistral-7b-instruct-v0.2 | Mistral 7B | 8,000 tokens | ~4-6 uUSDC/request |
+| @cf/deepseek-ai/deepseek-r1-distill-qwen-32b | DeepSeek R1 32B | 80,000 tokens | ~15-25 uUSDC/request |
 
 Default model: `@cf/meta/llama-3.1-8b-instruct`
 
@@ -122,7 +123,7 @@ Upload text documents to create a per-wallet knowledge base. Documents are chunk
 
 **Upload:** `POST /documents` with `{title, content}` — content is plain text, max 100KB, max 50 documents per wallet. Embedding cost is deducted from balance at upload.
 
-**Query:** Set `useRag: true` in your `/infer` request body. The prompt is embedded, matched against your documents via cosine similarity (top-5 chunks, min score 0.65), and injected as a system message. RAG failure is non-fatal — inference proceeds without context.
+**Query:** Set `useRag: true` in your `/infer` request body. The prompt is embedded, matched against your documents via cosine similarity (top-5 chunks, min score 0.45), and injected as a system message. Total input (prompt + history + RAG context) is validated against the selected model's context window — the server returns 413 if the limit is exceeded. RAG failure is non-fatal — inference proceeds without context.
 
 **Delete:** `DELETE /documents/:id` removes the document and its Vectorize embeddings.
 
