@@ -11,6 +11,7 @@
     "deploy": "wrangler deploy",
     "cf-typegen": "wrangler types",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "test:e2e": "npx ts-node --esm test/e2e.ts"
   },
@@ -21,6 +22,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260307.1",
     "@types/better-sqlite3": "^7.6.13",
+    "@vitest/coverage-v8": "^4.1.0",
     "better-sqlite3": "^12.8.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
