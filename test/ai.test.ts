@@ -40,6 +40,7 @@ describe('runInference — model selection', () => {
     expect(env.AI.run).toHaveBeenCalledWith(
       AI_MODEL,
       expect.objectContaining({}),
+      expect.objectContaining({ gateway: { id: 'dox402-gateway' } }),
     );
   });
 
@@ -49,6 +50,7 @@ describe('runInference — model selection', () => {
     expect(env.AI.run).toHaveBeenCalledWith(
       AI_MODEL,
       expect.objectContaining({}),
+      expect.objectContaining({ gateway: { id: 'dox402-gateway' } }),
     );
   });
 
@@ -58,6 +60,7 @@ describe('runInference — model selection', () => {
     expect(env.AI.run).toHaveBeenCalledWith(
       modelId,
       expect.objectContaining({}),
+      expect.objectContaining({ gateway: { id: 'dox402-gateway' } }),
     );
   });
 });
@@ -71,6 +74,7 @@ describe('runInference — max tokens clamping', () => {
     expect(env.AI.run).toHaveBeenCalledWith(
       AI_MODEL,
       expect.objectContaining({ max_tokens: MAX_TOKENS_LIMIT }),
+      expect.objectContaining({ gateway: { id: 'dox402-gateway' } }),
     );
   });
 
@@ -80,6 +84,7 @@ describe('runInference — max tokens clamping', () => {
     expect(env.AI.run).toHaveBeenCalledWith(
       AI_MODEL,
       expect.objectContaining({ max_tokens: 1 }),
+      expect.objectContaining({ gateway: { id: 'dox402-gateway' } }),
     );
   });
 
@@ -89,6 +94,7 @@ describe('runInference — max tokens clamping', () => {
     expect(env.AI.run).toHaveBeenCalledWith(
       AI_MODEL,
       expect.objectContaining({ max_tokens: 1 }),
+      expect.objectContaining({ gateway: { id: 'dox402-gateway' } }),
     );
   });
 
@@ -98,6 +104,7 @@ describe('runInference — max tokens clamping', () => {
     expect(env.AI.run).toHaveBeenCalledWith(
       AI_MODEL,
       expect.objectContaining({ max_tokens: 512 }),
+      expect.objectContaining({ gateway: { id: 'dox402-gateway' } }),
     );
   });
 
@@ -107,6 +114,7 @@ describe('runInference — max tokens clamping', () => {
     expect(env.AI.run).toHaveBeenCalledWith(
       AI_MODEL,
       expect.objectContaining({ max_tokens: 256 }),
+      expect.objectContaining({ gateway: { id: 'dox402-gateway' } }),
     );
   });
 });
@@ -120,6 +128,7 @@ describe('runInference — payload and return', () => {
     expect(env.AI.run).toHaveBeenCalledWith(
       AI_MODEL,
       expect.objectContaining({ messages: sampleMessages }),
+      expect.objectContaining({ gateway: { id: 'dox402-gateway' } }),
     );
   });
 
@@ -129,6 +138,7 @@ describe('runInference — payload and return', () => {
     expect(env.AI.run).toHaveBeenCalledWith(
       AI_MODEL,
       expect.objectContaining({ stream: true }),
+      expect.objectContaining({ gateway: { id: 'dox402-gateway' } }),
     );
   });
 

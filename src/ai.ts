@@ -20,6 +20,9 @@ export async function runInference(
       max_tokens: clampedTokens,
       stream: true,
     } as AiTextGenerationInput,
+    {
+      gateway: { id: 'dox402-gateway' },
+    },
   );
   return response as unknown as ReadableStream;
 }
