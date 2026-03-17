@@ -29,6 +29,10 @@ id = "4882d8452d0742a09defeff4826a5ad1"
 binding = "VECTORIZE"
 index_name = "rag-index"
 
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "dox402_events"
+
 [vars]
 NETWORK = "base-mainnet"
 PAYMENT_ADDRESS = "0x24AF3AcF8A91f5185e8CfB28087E2C54d49785B1" # overridden by secret in production

@@ -146,4 +146,5 @@ export interface Env {
   SESSION_SECRET: string;       // HMAC-SHA256 key for SIWE session tokens (set via wrangler secret put)
   WALLET_REGISTRY: KVNamespace; // global wallet registry for admin tooling
   ADMIN_SECRET?: string;        // admin Bearer token (set via wrangler secret put)
+  ANALYTICS?: AnalyticsEngineDataset; // Cloudflare Analytics Engine — fire-and-forget event tracking
 }

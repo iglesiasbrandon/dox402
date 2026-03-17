@@ -165,6 +165,11 @@ export class InferenceGate extends DurableObject<Env> {
     const count = row?.count ?? 0;
 
     if (count >= RATE_LIMIT_PER_MINUTE) {
+      // Analytics: rate limit hit
+      this.emitAnalytics('rate_limit', {
+        blobs: [this.walletAddress],
+        doubles: [count],
+      });
       return Response.json(
         { error: 'Rate limit exceeded — try again shortly' },
         { status: 429, headers: { 'Retry-After': String(60 - (now % 60)) } },
@@ -181,6 +186,18 @@ export class InferenceGate extends DurableObject<Env> {
     // Clean up old windows
     this.sql.exec('DELETE FROM rate_limits WHERE window_start < ?', windowStart);
     return null;
+  }
+
+  /** Fire-and-forget Analytics Engine event — no-op if ANALYTICS binding is absent */
+  private emitAnalytics(event: string, data: { blobs: string[]; doubles: number[] }): void {
+    if (!this.env.ANALYTICS) return;
+    try {
+      this.env.ANALYTICS.writeDataPoint({
+        blobs: [event, ...data.blobs],
+        doubles: data.doubles,
+        indexes: [this.walletAddress],
+      });
+    } catch { /* fire-and-forget — never fail the request */ }
   }
 
   // ── Public RPC methods ────────────────────────────────────────────────────
@@ -503,6 +520,11 @@ export class InferenceGate extends DurableObject<Env> {
            WHERE id = 1`,
           Date.now(),
         );
+        // Analytics: failed inference
+        this.emitAnalytics('inference', {
+          blobs: [this.walletAddress, body.model ?? AI_MODEL, `error:${validation.reason}`],
+          doubles: [0, Date.now() - startTime, 0, 0, 0],
+        });
         return; // no billing, no history
       }
 
@@ -521,6 +543,13 @@ export class InferenceGate extends DurableObject<Env> {
          WHERE id = 1`,
         cost, cost, Date.now(),
       );
+
+      // Analytics: successful inference
+      const usedFallbackBilling = !usage?.prompt_tokens && !usage?.completion_tokens;
+      this.emitAnalytics('inference', {
+        blobs: [this.walletAddress, body.model ?? AI_MODEL, 'ok', usedFallbackBilling ? 'char_fallback' : 'token_count'],
+        doubles: [cost, Date.now() - startTime, usage?.prompt_tokens || 0, usage?.completion_tokens || 0, ragCostMicroUSDC],
+      });
 
       // Append user prompt + assistant reply to persistent history
       if (responseText) {
@@ -653,6 +682,12 @@ export class InferenceGate extends DurableObject<Env> {
         proof.txHash, this.walletAddress, creditAmount);
       await this.ensureAlarm(GRACE_INITIAL_RETRY_MS);
     }
+
+    // Analytics: deposit confirmed
+    this.emitAnalytics('deposit', {
+      blobs: [this.walletAddress, proof.txHash, isProvisional ? 'provisional' : 'confirmed'],
+      doubles: [creditAmount, newBalance],
+    });
 
     return Response.json(
       { ok: true, credited: creditAmount, tokens: newBalance, provisional: isProvisional },
