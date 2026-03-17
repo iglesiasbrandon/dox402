@@ -23,6 +23,7 @@ function makeMockEnv(aiRunImpl?: (...args: unknown[]) => unknown): Env {
     NETWORK: 'base-mainnet',
     SESSION_SECRET: 'test-secret',
     WALLET_REGISTRY: {} as unknown as KVNamespace,
+    RAG_STORAGE: {} as unknown as R2Bucket,
   } as unknown as Env;
 }
 

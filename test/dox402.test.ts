@@ -75,16 +75,8 @@ function makeMockStorage() {
     },
   };
 
-  // Run schema migrations (same as production)
-  sqlMock.exec(`CREATE TABLE IF NOT EXISTS _schema_migrations (
-    version TEXT PRIMARY KEY,
-    applied_at INTEGER NOT NULL
-  )`);
-  for (const [version, up] of MIGRATIONS) {
-    up(sqlMock);
-    sqlMock.exec('INSERT INTO _schema_migrations (version, applied_at) VALUES (?, ?)',
-      version, Date.now());
-  }
+  // Migrations are run later in makeTestDO after env is available
+  // (migration 003 is async and requires R2 binding)
 
   return {
     sql: sqlMock,
@@ -109,7 +101,7 @@ function makeMockStorage() {
   };
 }
 
-function makeTestDO(opts?: { aiStream?: ReadableStream }) {
+async function makeTestDO(opts?: { aiStream?: ReadableStream }) {
   const storage = makeMockStorage();
 
   const mockAI = {
@@ -147,6 +139,17 @@ function makeTestDO(opts?: { aiStream?: ReadableStream }) {
     getByIds: vi.fn(async () => []),
   };
 
+  const mockR2Store = new Map<string, string>();
+  const mockR2 = {
+    put: vi.fn(async (key: string, value: string) => { mockR2Store.set(key, value); }),
+    get: vi.fn(async (key: string) => {
+      const val = mockR2Store.get(key);
+      if (!val) return null;
+      return { text: async () => val };
+    }),
+    delete: vi.fn(async (key: string) => { mockR2Store.delete(key); }),
+  };
+
   const env: Env = {
     DOX402: {} as any,
     AI: mockAI as any,
@@ -156,10 +159,22 @@ function makeTestDO(opts?: { aiStream?: ReadableStream }) {
     NETWORK: 'base-mainnet',
     SESSION_SECRET: 'test-secret',
     WALLET_REGISTRY: mockKV as any,
+    RAG_STORAGE: mockR2 as any,
   };
 
+  // Run migrations before constructor (migration 003 needs env with R2)
+  storage.sql.exec(`CREATE TABLE IF NOT EXISTS _schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at INTEGER NOT NULL
+  )`);
+  for (const [version, up] of MIGRATIONS) {
+    await up(storage.sql, env, '');
+    storage.sql.exec('INSERT INTO _schema_migrations (version, applied_at) VALUES (?, ?)',
+      version, Date.now());
+  }
+
   const gate = new InferenceGate(ctx as any, env as any);
-  return { gate, storage, waitUntilPromises, mockAI, mockKV, mockVectorize };
+  return { gate, storage, waitUntilPromises, mockAI, mockKV, mockVectorize, mockR2, mockR2Store };
 }
 
 async function drainStream(response: Response): Promise<string> {
@@ -219,7 +234,7 @@ function getHistoryRows(storage: ReturnType<typeof makeMockStorage>) {
 describe('InferenceGate — credit refund on AI failure', () => {
 
   it('deducts credits on successful inference', async () => {
-    const { gate, storage, waitUntilPromises } = makeTestDO();
+    const { gate, storage, waitUntilPromises } = await makeTestDO();
     setBalance(storage, 1000);
 
     const response = await callInfer(gate);
@@ -236,7 +251,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
 
   it('does NOT deduct credits when AI returns empty SSE stream', async () => {
     const emptyStream = mockSSEStream(['data: [DONE]\n\n']);
-    const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
+    const { gate, storage, waitUntilPromises } = await makeTestDO({ aiStream: emptyStream });
     setBalance(storage, 1000);
 
     const response = await callInfer(gate);
@@ -256,7 +271,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
       'data: {"error":"Internal server error"}\n\n',
       'data: [DONE]\n\n',
     ]);
-    const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: errorStream });
+    const { gate, storage, waitUntilPromises } = await makeTestDO({ aiStream: errorStream });
     setBalance(storage, 500);
 
     const response = await callInfer(gate);
@@ -273,7 +288,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
       ['data: {"response":"Hel"}\n\n'],
       new Error('network timeout'),
     );
-    const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: brokenStream });
+    const { gate, storage, waitUntilPromises } = await makeTestDO({ aiStream: brokenStream });
     setBalance(storage, 500);
 
     const response = await callInfer(gate);
@@ -287,7 +302,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
 
   it('does NOT append failed response to conversation history', async () => {
     const emptyStream = mockSSEStream(['data: [DONE]\n\n']);
-    const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
+    const { gate, storage, waitUntilPromises } = await makeTestDO({ aiStream: emptyStream });
     setBalance(storage, 1000);
 
     const response = await callInfer(gate);
@@ -300,7 +315,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
 
   it('increments totalRequests even on failure', async () => {
     const emptyStream = mockSSEStream(['data: [DONE]\n\n']);
-    const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
+    const { gate, storage, waitUntilPromises } = await makeTestDO({ aiStream: emptyStream });
     setBalance(storage, 1000);
 
     const response = await callInfer(gate);
@@ -316,7 +331,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
       'data: {"usage":{"prompt_tokens":5,"completion_tokens":1}}\n\n',
       'data: [DONE]\n\n',
     ]);
-    const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: shortStream });
+    const { gate, storage, waitUntilPromises } = await makeTestDO({ aiStream: shortStream });
     setBalance(storage, 1000);
 
     const response = await callInfer(gate, 'Is 2+2=4?');
@@ -329,7 +344,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
   });
 
   it('appends successful response to conversation history', async () => {
-    const { gate, storage, waitUntilPromises } = makeTestDO();
+    const { gate, storage, waitUntilPromises } = await makeTestDO();
     setBalance(storage, 1000);
 
     const response = await callInfer(gate, 'What is AI?');
@@ -346,7 +361,7 @@ describe('InferenceGate — credit refund on AI failure', () => {
 
   it('exposes totalFailedRequests in /balance response', async () => {
     const emptyStream = mockSSEStream(['data: [DONE]\n\n']);
-    const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: emptyStream });
+    const { gate, storage, waitUntilPromises } = await makeTestDO({ aiStream: emptyStream });
     setBalance(storage, 1000);
 
     // Trigger a failed inference first
@@ -385,7 +400,7 @@ describe('InferenceGate — streaming heartbeat and duration guard', () => {
     vi.useFakeTimers();
     try {
       const ctrl = controllableStream();
-      const { gate, storage } = makeTestDO({ aiStream: ctrl.stream });
+      const { gate, storage } = await makeTestDO({ aiStream: ctrl.stream });
       setBalance(storage, 1000);
 
       const response = await callInfer(gate);
@@ -416,7 +431,7 @@ describe('InferenceGate — streaming heartbeat and duration guard', () => {
     vi.useFakeTimers();
     try {
       const ctrl = controllableStream();
-      const { gate, storage } = makeTestDO({ aiStream: ctrl.stream });
+      const { gate, storage } = await makeTestDO({ aiStream: ctrl.stream });
       setBalance(storage, 1000);
 
       const response = await callInfer(gate);
@@ -445,7 +460,7 @@ describe('InferenceGate — streaming heartbeat and duration guard', () => {
     vi.useFakeTimers();
     try {
       const ctrl = controllableStream();
-      const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: ctrl.stream });
+      const { gate, storage, waitUntilPromises } = await makeTestDO({ aiStream: ctrl.stream });
       setBalance(storage, 1000);
 
       const response = await callInfer(gate);
@@ -478,7 +493,7 @@ describe('InferenceGate — streaming heartbeat and duration guard', () => {
     vi.useFakeTimers();
     try {
       const ctrl = controllableStream();
-      const { gate, storage, waitUntilPromises } = makeTestDO({ aiStream: ctrl.stream });
+      const { gate, storage, waitUntilPromises } = await makeTestDO({ aiStream: ctrl.stream });
       setBalance(storage, 1000);
 
       const response = await callInfer(gate);
@@ -503,7 +518,7 @@ describe('InferenceGate — streaming heartbeat and duration guard', () => {
 
   it('does not send heartbeat when data flows continuously', async () => {
     // Default mock stream delivers chunks instantly — no idle period
-    const { gate, storage, waitUntilPromises } = makeTestDO();
+    const { gate, storage, waitUntilPromises } = await makeTestDO();
     setBalance(storage, 1000);
 
     const response = await callInfer(gate);
@@ -556,7 +571,7 @@ describe('InferenceGate — alarm re-verification', () => {
   }
 
   it('confirms valid transaction on re-verification', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     setupPendingEntry(storage);
     setBalance(storage, 1000);
 
@@ -573,7 +588,7 @@ describe('InferenceGate — alarm re-verification', () => {
   });
 
   it('reverses fraudulent transaction on re-verification', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     setupPendingEntry(storage, { creditedAmount: 1000 });
     setBalance(storage, 1000);
 
@@ -590,7 +605,7 @@ describe('InferenceGate — alarm re-verification', () => {
   });
 
   it('reschedules alarm on continued RPC failure', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     setupPendingEntry(storage, { retryCount: 1 });
 
     verifyProofSpy.mockResolvedValue({ valid: true, provisional: true, reason: 'RPC timeout' });
@@ -607,7 +622,7 @@ describe('InferenceGate — alarm re-verification', () => {
   });
 
   it('expires after max retries — keeps credit (benefit of doubt)', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     setupPendingEntry(storage, { retryCount: 5, creditedAmount: 1000 }); // retryCount 5, will become 6 = max
 
     verifyProofSpy.mockResolvedValue({ valid: true, provisional: true, reason: 'RPC timeout' });
@@ -623,7 +638,7 @@ describe('InferenceGate — alarm re-verification', () => {
   });
 
   it('processes multiple pending entries in one alarm invocation', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     const txHash1 = '0x' + 'a'.repeat(64);
     const txHash2 = '0x' + 'b'.repeat(64);
 
@@ -665,7 +680,7 @@ describe('InferenceGate — alarm re-verification', () => {
   });
 
   it('exposes provisionalTokens in /balance response', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     storage.sql.exec(
       'UPDATE wallet_state SET balance = 2000, provisional_balance = 1000 WHERE id = 1',
     );
@@ -694,7 +709,7 @@ describe('InferenceGate — storage cleanup', () => {
   const TWENTY_FOUR_HOURS_MS = 86_400_000;
 
   it('deletes seen keys older than retention period', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Old seen key (2 hours ago) — should be cleaned up
@@ -718,7 +733,7 @@ describe('InferenceGate — storage cleanup', () => {
   });
 
   it('deletes terminal pending entries older than 24 hours', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Old confirmed entry (48h ago) — should be cleaned up
@@ -738,7 +753,7 @@ describe('InferenceGate — storage cleanup', () => {
   });
 
   it('keeps active pending entries regardless of age', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     storage.sql.exec('UPDATE wallet_state SET wallet_address = ?, provisional_balance = 1000 WHERE id = 1', '0xtest');
 
     // Old but still-pending entry — cleanup must NOT delete it
@@ -763,7 +778,7 @@ describe('InferenceGate — storage cleanup', () => {
   });
 
   it('reschedules alarm for remaining seen keys when no grace entries', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Recent seen key — not yet expired, should trigger cleanup alarm reschedule
@@ -783,7 +798,7 @@ describe('InferenceGate — storage cleanup', () => {
   });
 
   it('does not reschedule alarm when all seen keys are cleaned up', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Only old seen key — will be cleaned up, no remaining keys
@@ -805,7 +820,7 @@ describe('InferenceGate — storage cleanup', () => {
   });
 
   it('keeps reversed/expired pending entries younger than 24h for audit', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Recent reversed entry (1h ago) — should be kept for audit
@@ -830,7 +845,7 @@ describe('InferenceGate — storage cleanup', () => {
 describe('InferenceGate — handleAdminStatus', () => {
 
   it('returns all wallet status fields', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     storage.sql.exec(
       `UPDATE wallet_state SET
         wallet_address = '0xtest', balance = 5000, total_deposited = 10000,
@@ -858,7 +873,7 @@ describe('InferenceGate — handleAdminStatus', () => {
   });
 
   it('counts history, pending, nonce, and seen_tx rows', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Insert some history rows
@@ -898,7 +913,7 @@ describe('InferenceGate — handleAdminStatus', () => {
   });
 
   it('is not rate-limited (admin bypass)', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
     storage.sql.exec('UPDATE wallet_state SET wallet_address = ? WHERE id = 1', '0xtest');
 
     // Fill up the rate limit window
@@ -920,7 +935,7 @@ describe('InferenceGate — handleAdminStatus', () => {
 describe('InferenceGate — KV wallet registration', () => {
 
   it('registers wallet in KV on first handleInfer call', async () => {
-    const { gate, storage, waitUntilPromises, mockKV } = makeTestDO();
+    const { gate, storage, waitUntilPromises, mockKV } = await makeTestDO();
     setBalance(storage, 1000);
 
     const response = await callInfer(gate);
@@ -935,7 +950,7 @@ describe('InferenceGate — KV wallet registration', () => {
   });
 
   it('does NOT re-register on subsequent handleInfer calls', async () => {
-    const { gate, storage, waitUntilPromises, mockKV } = makeTestDO();
+    const { gate, storage, waitUntilPromises, mockKV } = await makeTestDO();
     setBalance(storage, 2000);
 
     // First call — should register
@@ -974,7 +989,7 @@ describe('InferenceGate — document CRUD', () => {
   }
 
   it('handleDocumentUpload returns 201 with DocumentMeta', async () => {
-    const { gate, storage, mockAI } = makeTestDO();
+    const { gate, storage, mockAI } = await makeTestDO();
     setupAIForDocuments(mockAI);
     setBalance(storage, 10000);
 
@@ -995,7 +1010,7 @@ describe('InferenceGate — document CRUD', () => {
   });
 
   it('handleDocumentUpload deducts embedding cost from balance', async () => {
-    const { gate, storage, mockAI } = makeTestDO();
+    const { gate, storage, mockAI } = await makeTestDO();
     setupAIForDocuments(mockAI);
     setBalance(storage, 10000);
 
@@ -1010,7 +1025,7 @@ describe('InferenceGate — document CRUD', () => {
   });
 
   it('handleDocumentUpload inserts into documents and document_chunks tables', async () => {
-    const { gate, storage, mockAI } = makeTestDO();
+    const { gate, storage, mockAI } = await makeTestDO();
     setupAIForDocuments(mockAI);
     setBalance(storage, 10000);
 
@@ -1027,7 +1042,7 @@ describe('InferenceGate — document CRUD', () => {
   });
 
   it('handleDocumentUpload calls VECTORIZE.upsert', async () => {
-    const { gate, storage, mockAI, mockVectorize } = makeTestDO();
+    const { gate, storage, mockAI, mockVectorize } = await makeTestDO();
     setupAIForDocuments(mockAI);
     setBalance(storage, 10000);
 
@@ -1043,7 +1058,7 @@ describe('InferenceGate — document CRUD', () => {
   });
 
   it('handleDocumentUpload rejects content > 100KB', async () => {
-    const { gate, storage, mockAI } = makeTestDO();
+    const { gate, storage, mockAI } = await makeTestDO();
     setupAIForDocuments(mockAI);
     setBalance(storage, 10000);
 
@@ -1055,16 +1070,16 @@ describe('InferenceGate — document CRUD', () => {
   });
 
   it('handleDocumentUpload rejects when at document limit', async () => {
-    const { gate, storage, mockAI } = makeTestDO();
+    const { gate, storage, mockAI } = await makeTestDO();
     setupAIForDocuments(mockAI);
     setBalance(storage, 10000);
 
     // Insert 50 dummy documents directly via SQL
     for (let i = 0; i < 50; i++) {
       storage.sql.exec(
-        `INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        `doc-${i}`, `title-${i}`, 'content', 7, 1, 1, Date.now(),
+        `INSERT INTO documents (id, title, char_count, chunk_count, embedding_cost, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        `doc-${i}`, `title-${i}`, 7, 1, 1, Date.now(),
       );
     }
 
@@ -1076,7 +1091,7 @@ describe('InferenceGate — document CRUD', () => {
   });
 
   it('handleDocumentUpload rejects insufficient balance', async () => {
-    const { gate, storage, mockAI } = makeTestDO();
+    const { gate, storage, mockAI } = await makeTestDO();
     setupAIForDocuments(mockAI);
     setBalance(storage, 0);
 
@@ -1088,18 +1103,18 @@ describe('InferenceGate — document CRUD', () => {
   });
 
   it('handleDocumentList returns documents in descending order', async () => {
-    const { gate, storage } = makeTestDO();
+    const { gate, storage } = await makeTestDO();
 
     // Insert 2 documents directly via SQL with different timestamps
     storage.sql.exec(
-      `INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      'doc-older', 'Older Doc', 'old content', 11, 1, 1, 1000,
+      `INSERT INTO documents (id, title, char_count, chunk_count, embedding_cost, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      'doc-older', 'Older Doc', 11, 1, 1, 1000,
     );
     storage.sql.exec(
-      `INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      'doc-newer', 'Newer Doc', 'new content', 11, 1, 1, 2000,
+      `INSERT INTO documents (id, title, char_count, chunk_count, embedding_cost, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      'doc-newer', 'Newer Doc', 11, 1, 1, 2000,
     );
 
     const res = await gate.handleDocumentList();
@@ -1112,23 +1127,23 @@ describe('InferenceGate — document CRUD', () => {
   });
 
   it('handleDocumentDelete removes from SQL and calls VECTORIZE.deleteByIds', async () => {
-    const { gate, storage, mockVectorize } = makeTestDO();
+    const { gate, storage, mockVectorize } = await makeTestDO();
 
     const docId = 'doc-to-delete';
 
     // Insert a document and chunks directly
     storage.sql.exec(
-      `INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      docId, 'Delete Me', 'some content', 12, 2, 1, Date.now(),
+      `INSERT INTO documents (id, title, char_count, chunk_count, embedding_cost, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      docId, 'Delete Me', 12, 2, 1, Date.now(),
     );
     storage.sql.exec(
-      'INSERT INTO document_chunks (chunk_id, document_id, chunk_index, chunk_text) VALUES (?, ?, ?, ?)',
-      `${docId}:0`, docId, 0, 'chunk zero',
+      'INSERT INTO document_chunks (chunk_id, document_id, chunk_index) VALUES (?, ?, ?)',
+      `${docId}:0`, docId, 0,
     );
     storage.sql.exec(
-      'INSERT INTO document_chunks (chunk_id, document_id, chunk_index, chunk_text) VALUES (?, ?, ?, ?)',
-      `${docId}:1`, docId, 1, 'chunk one',
+      'INSERT INTO document_chunks (chunk_id, document_id, chunk_index) VALUES (?, ?, ?)',
+      `${docId}:1`, docId, 1,
     );
 
     const res = await gate.handleDocumentDelete(docId);
@@ -1146,7 +1161,7 @@ describe('InferenceGate — document CRUD', () => {
   });
 
   it('handleDocumentDelete returns 404 for unknown ID', async () => {
-    const { gate } = makeTestDO();
+    const { gate } = await makeTestDO();
 
     const res = await gate.handleDocumentDelete('nonexistent');
     expect(res.status).toBe(404);
@@ -1173,7 +1188,7 @@ describe('InferenceGate — RAG-augmented inference', () => {
   }
 
   it('useRag=true with matching chunks prepends system message', async () => {
-    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = makeTestDO();
+    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = await makeTestDO();
     setupAIForRAG(mockAI);
     setBalance(storage, 10000);
 
@@ -1202,7 +1217,7 @@ describe('InferenceGate — RAG-augmented inference', () => {
   });
 
   it('useRag=true with no matches does not prepend system message', async () => {
-    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = makeTestDO();
+    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = await makeTestDO();
     setupAIForRAG(mockAI);
     setBalance(storage, 10000);
 
@@ -1228,7 +1243,7 @@ describe('InferenceGate — RAG-augmented inference', () => {
   });
 
   it('useRag=false (default) does not query Vectorize', async () => {
-    const { gate, storage, waitUntilPromises, mockVectorize } = makeTestDO();
+    const { gate, storage, waitUntilPromises, mockVectorize } = await makeTestDO();
     setBalance(storage, 10000);
 
     const res = await callInfer(gate);
@@ -1239,7 +1254,7 @@ describe('InferenceGate — RAG-augmented inference', () => {
   });
 
   it('RAG query cost added to billing', async () => {
-    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = makeTestDO();
+    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = await makeTestDO();
     setupAIForRAG(mockAI);
     setBalance(storage, 10000);
 
@@ -1256,7 +1271,7 @@ describe('InferenceGate — RAG-augmented inference', () => {
     await Promise.allSettled(waitUntilPromises);
 
     // Also run a non-RAG inference for comparison
-    const { gate: gate2, storage: storage2, waitUntilPromises: wup2 } = makeTestDO();
+    const { gate: gate2, storage: storage2, waitUntilPromises: wup2 } = await makeTestDO();
     setBalance(storage2, 10000);
 
     const res2 = await callInfer(gate2);
@@ -1271,7 +1286,7 @@ describe('InferenceGate — RAG-augmented inference', () => {
   });
 
   it('RAG failure is non-fatal (inference proceeds)', async () => {
-    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = makeTestDO();
+    const { gate, storage, waitUntilPromises, mockAI, mockVectorize } = await makeTestDO();
     setupAIForRAG(mockAI);
     setBalance(storage, 10000);
 
@@ -1292,7 +1307,7 @@ describe('InferenceGate — RAG-augmented inference', () => {
   });
 
   it('useRag=undefined is backward compatible (Vectorize not queried)', async () => {
-    const { gate, storage, waitUntilPromises, mockVectorize } = makeTestDO();
+    const { gate, storage, waitUntilPromises, mockVectorize } = await makeTestDO();
     setBalance(storage, 10000);
 
     const res = await gate.handleInfer(

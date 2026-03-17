@@ -4,6 +4,12 @@
 //
 // The `sql` parameter matches Cloudflare's ctx.storage.sql interface
 // (synchronous exec with positional bindings).
+//
+// Migration functions may be sync or async. Async migrations (e.g. 003)
+// are used when external I/O (like R2 writes) is required during migration.
+
+import type { Env } from './types';
+import { storeDocumentContent } from './rag';
 
 export interface SqlExec {
   exec<T = Record<string, unknown>>(query: string, ...bindings: unknown[]): {
@@ -12,7 +18,10 @@ export interface SqlExec {
   };
 }
 
-export type Migration = [version: string, up: (sql: SqlExec) => void];
+export type Migration = [
+  version: string,
+  up: (sql: SqlExec, env: Env, wallet: string) => void | Promise<void>,
+];
 
 export const MIGRATIONS: Migration[] = [
   ['001', (sql) => {
@@ -97,5 +106,37 @@ export const MIGRATIONS: Migration[] = [
     )`);
 
     sql.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON document_chunks(document_id)`);
+  }],
+
+  // ── Migration 003: Move document content from SQLite to R2 ──────────────
+  // This is an async migration: reads all document content from SQL, writes
+  // each to R2 object storage, then drops the content columns. After this
+  // migration, R2 is the sole source of truth for document text.
+  ['003', async (sql, env, wallet) => {
+    // Phase 1: Read all documents with content still in SQL
+    const docs = sql.exec<{ id: string; content: string }>(
+      "SELECT id, content FROM documents WHERE content IS NOT NULL AND content != ''",
+    ).toArray();
+
+    // Phase 2: Write each document's content to R2
+    let migratedCount = 0;
+    for (const doc of docs) {
+      const ok = await storeDocumentContent(env, wallet, doc.id, doc.content);
+      if (!ok) {
+        // R2 write failed — abort migration so it retries on next activation
+        throw new Error(`R2 migration failed: could not store document ${doc.id}`);
+      }
+      migratedCount++;
+    }
+
+    // Phase 3: Drop content columns (R2 is now source of truth)
+    // SQLite doesn't support DROP COLUMN in older versions, but Cloudflare DO
+    // SQLite uses a modern version that does support it.
+    sql.exec('ALTER TABLE documents DROP COLUMN content');
+    sql.exec('ALTER TABLE document_chunks DROP COLUMN chunk_text');
+
+    if (migratedCount > 0) {
+      console.log('[migrations] 003: Migrated %d documents from SQL to R2 for wallet %s', migratedCount, wallet);
+    }
   }],
 ];

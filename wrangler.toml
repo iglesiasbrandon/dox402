@@ -33,6 +33,10 @@ index_name = "rag-index"
 binding = "ANALYTICS"
 dataset = "dox402_events"
 
+[[r2_buckets]]
+binding = "RAG_STORAGE"
+bucket_name = "dox402-rag-storage"
+
 [vars]
 NETWORK = "base-mainnet"
 PAYMENT_ADDRESS = "0x24AF3AcF8A91f5185e8CfB28087E2C54d49785B1" # overridden by secret in production

@@ -10,7 +10,7 @@ import {
 import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billing';
 import { AdminWalletStatus, ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce, WalletRegistryEntry } from './types';
 import { MIGRATIONS } from './migrations';
-import { upsertDocument, queryRagContext, deleteDocumentVectors, computeEmbeddingCost } from './rag';
+import { upsertDocument, queryRagContext, deleteDocumentVectors, computeEmbeddingCost, storeDocumentContent, getDocumentContent, deleteDocumentContent } from './rag';
 import { RAG_MAX_DOCUMENT_SIZE, RAG_MAX_DOCUMENTS, NEURON_RATES } from './constants';
 import { DocumentUploadRequest, DocumentMeta } from './types';
 
@@ -24,7 +24,7 @@ export class InferenceGate extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      this.runMigrations();
+      await this.runMigrations();
       await this.migrateFromKV();
       const rows = this.sql.exec<{ wallet_address: string }>(
         'SELECT wallet_address FROM wallet_state WHERE id = 1',
@@ -35,8 +35,8 @@ export class InferenceGate extends DurableObject<Env> {
 
   // ── Schema migration infrastructure ────────────────────────────────────────
 
-  /** Run unapplied SQL migrations in order (synchronous — all SQL) */
-  private runMigrations(): void {
+  /** Run unapplied SQL migrations in order. Supports async migrations (e.g. R2 content migration). */
+  private async runMigrations(): Promise<void> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS _schema_migrations (
       version TEXT PRIMARY KEY,
       applied_at INTEGER NOT NULL
@@ -45,9 +45,15 @@ export class InferenceGate extends DurableObject<Env> {
       this.sql.exec<{ version: string }>('SELECT version FROM _schema_migrations')
         .toArray().map(r => r.version),
     );
+    // Read wallet address early — needed by async migrations (e.g. 003 R2 migration)
+    const rows = this.sql.exec<{ wallet_address: string }>(
+      'SELECT wallet_address FROM wallet_state WHERE id = 1',
+    ).toArray();
+    const wallet = rows[0]?.wallet_address ?? '';
+
     for (const [version, up] of MIGRATIONS) {
       if (!applied.has(version)) {
-        up(this.sql);
+        await up(this.sql, this.env, wallet);
         this.sql.exec(
           'INSERT INTO _schema_migrations (version, applied_at) VALUES (?, ?)',
           version, Date.now(),
@@ -261,12 +267,12 @@ export class InferenceGate extends DurableObject<Env> {
         console.error('[InferenceGate] RAG Vectorize query failed:', err instanceof Error ? err.message : String(err));
       }
 
-      // SQL fallback: if Vectorize returned nothing (eventual consistency lag or error),
-      // inject document content directly from SQLite so files are always available
+      // R2 fallback: if Vectorize returned nothing (eventual consistency lag or error),
+      // inject document content directly from R2 so files are always available
       if (!ragInjected) {
         try {
-          const docs = this.sql.exec<{ title: string; content: string }>(
-            'SELECT title, content FROM documents ORDER BY created_at',
+          const docs = this.sql.exec<{ id: string; title: string }>(
+            'SELECT id, title FROM documents ORDER BY created_at',
           ).toArray();
           if (docs.length > 0) {
             const preamble =
@@ -274,18 +280,23 @@ export class InferenceGate extends DurableObject<Env> {
               'Use them to inform your response if relevant, but do not mention them unless asked.';
             let contextBody = '';
             for (const doc of docs) {
-              contextBody += `\n---\n[${doc.title}]\n${doc.content}`;
+              const content = await getDocumentContent(this.env, this.wallet, doc.id);
+              if (content) {
+                contextBody += `\n---\n[${doc.title}]\n${content}`;
+              } else {
+                console.warn('[InferenceGate] RAG fallback: R2 content missing for doc %s', doc.id);
+              }
             }
             if (contextBody.length > 0) {
               const systemMessage = preamble + contextBody + '\n---';
               messages.unshift({ role: 'system' as const, content: systemMessage });
               ragChunkCount = docs.length;
-              console.log('[InferenceGate] RAG fallback: injected %d docs (%d chars) from SQL for wallet %s',
+              console.log('[InferenceGate] RAG fallback: injected %d docs (%d chars) from R2 for wallet %s',
                 docs.length, systemMessage.length, this.wallet);
             }
           }
         } catch (err) {
-          console.error('[InferenceGate] RAG SQL fallback failed:', err instanceof Error ? err.message : String(err));
+          console.error('[InferenceGate] RAG R2 fallback failed:', err instanceof Error ? err.message : String(err));
         }
       }
     }
@@ -786,21 +797,27 @@ export class InferenceGate extends DurableObject<Env> {
     // Generate document ID
     const docId = crypto.randomUUID();
 
+    // Store content in R2 (primary storage)
+    const r2Ok = await storeDocumentContent(this.env, this.wallet, docId, body.content);
+    if (!r2Ok) {
+      return Response.json({ error: 'Failed to store document content' }, { status: 500 });
+    }
+
     // Chunk + embed + upsert into Vectorize
     const { chunks, embeddingCost: actualCost } = await upsertDocument(this.env, this.wallet, docId, body.content);
 
-    // Persist to SQL atomically
+    // Persist metadata to SQL atomically (content lives in R2)
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(
-        `INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        docId, body.title, body.content, body.content.length, chunks.length, actualCost, Date.now(),
+        `INSERT INTO documents (id, title, char_count, chunk_count, embedding_cost, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        docId, body.title, body.content.length, chunks.length, actualCost, Date.now(),
       );
 
       for (const chunk of chunks) {
         this.sql.exec(
-          'INSERT INTO document_chunks (chunk_id, document_id, chunk_index, chunk_text) VALUES (?, ?, ?, ?)',
-          chunk.id, docId, chunk.index, chunk.text,
+          'INSERT INTO document_chunks (chunk_id, document_id, chunk_index) VALUES (?, ?, ?)',
+          chunk.id, docId, chunk.index,
         );
       }
 
@@ -858,9 +875,9 @@ export class InferenceGate extends DurableObject<Env> {
     // Step 2: Clear the chunk tracking table
     this.sql.exec('DELETE FROM document_chunks');
 
-    // Step 3: Re-upsert all current documents
-    const docs = this.sql.exec<{ id: string; content: string }>(
-      'SELECT id, content FROM documents',
+    // Step 3: Re-upsert all current documents (content from R2)
+    const docs = this.sql.exec<{ id: string }>(
+      'SELECT id FROM documents',
     ).toArray();
 
     if (docs.length === 0) {
@@ -868,20 +885,28 @@ export class InferenceGate extends DurableObject<Env> {
     }
 
     let totalChunks = 0;
+    let skipped = 0;
     for (const doc of docs) {
-      const { chunks } = await upsertDocument(this.env, this.wallet, doc.id, doc.content);
+      const content = await getDocumentContent(this.env, this.wallet, doc.id);
+      if (!content) {
+        console.warn('[InferenceGate] Reindex: R2 content missing for doc %s, skipping', doc.id);
+        skipped++;
+        continue;
+      }
+
+      const { chunks } = await upsertDocument(this.env, this.wallet, doc.id, content);
       totalChunks += chunks.length;
 
       // Re-populate chunk tracking
       for (const chunk of chunks) {
         this.sql.exec(
-          'INSERT INTO document_chunks (chunk_id, document_id, chunk_index, chunk_text) VALUES (?, ?, ?, ?)',
-          chunk.id, doc.id, chunk.index, chunk.text,
+          'INSERT INTO document_chunks (chunk_id, document_id, chunk_index) VALUES (?, ?, ?)',
+          chunk.id, doc.id, chunk.index,
         );
       }
     }
 
-    return Response.json({ ok: true, reindexed: docs.length, totalChunks, deletedOldVectors: oldChunks.length });
+    return Response.json({ ok: true, reindexed: docs.length - skipped, skipped, totalChunks, deletedOldVectors: oldChunks.length });
   }
 
   async handleRagDebug(prompt: string): Promise<Response> {
@@ -951,6 +976,9 @@ export class InferenceGate extends DurableObject<Env> {
 
     // Delete from Vectorize
     await deleteDocumentVectors(this.env, chunkIds);
+
+    // Delete content from R2 (non-fatal if it fails)
+    await deleteDocumentContent(this.env, this.wallet, documentId);
 
     // Delete from SQL
     this.sql.exec('DELETE FROM document_chunks WHERE document_id = ?', documentId);

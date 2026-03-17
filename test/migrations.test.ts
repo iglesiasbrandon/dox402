@@ -1,6 +1,10 @@
 import Database from 'better-sqlite3';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { MIGRATIONS } from '../src/migrations';
+import type { Env } from '../src/types';
+
+const dummyEnv = {} as unknown as Env;
+const dummyWallet = '0xtest';
 
 function makeSql() {
   const db = new Database(':memory:');
@@ -26,16 +30,43 @@ function runMigration(version: string) {
   const { db, sql } = makeSql();
   const migration = MIGRATIONS.find(([v]) => v === version);
   if (!migration) throw new Error(`Migration ${version} not found`);
-  migration[1](sql);
+  migration[1](sql, dummyEnv, dummyWallet);
   return { db, sql };
 }
 
-function runAllMigrations() {
+/** Run migrations 001 and 002 only (sync, no R2 needed) */
+function runSyncMigrations() {
   const { db, sql } = makeSql();
-  for (const [, up] of MIGRATIONS) {
-    up(sql);
+  for (const [version, up] of MIGRATIONS) {
+    if (version === '003') break; // Skip async R2 migration
+    up(sql, dummyEnv, dummyWallet);
   }
   return { db, sql };
+}
+
+/** Run all migrations including async 003 (needs mock R2 env) */
+async function runAllMigrations(env?: Env) {
+  const { db, sql } = makeSql();
+  for (const [, up] of MIGRATIONS) {
+    await up(sql, env ?? dummyEnv, dummyWallet);
+  }
+  return { db, sql };
+}
+
+function makeMockR2Env(): { env: Env; stored: Map<string, string> } {
+  const stored = new Map<string, string>();
+  const env = {
+    RAG_STORAGE: {
+      put: vi.fn(async (key: string, value: string) => { stored.set(key, value); }),
+      get: vi.fn(async (key: string) => {
+        const val = stored.get(key);
+        if (!val) return null;
+        return { text: async () => val };
+      }),
+      delete: vi.fn(async (key: string) => { stored.delete(key); }),
+    },
+  } as unknown as Env;
+  return { env, stored };
 }
 
 function getColumns(db: InstanceType<typeof Database>, table: string) {
@@ -156,7 +187,7 @@ describe('Migration 001 - Schema validation', () => {
 
 describe('Migration 002 - Schema validation', () => {
   it('documents table exists with correct columns', () => {
-    const { db } = runAllMigrations();
+    const { db } = runSyncMigrations();
     const cols = getColumns(db, 'documents');
     const colNames = cols.map((c) => c.name);
     expect(colNames).toEqual(
@@ -173,7 +204,7 @@ describe('Migration 002 - Schema validation', () => {
   });
 
   it('document_chunks table exists with foreign key to documents', () => {
-    const { db } = runAllMigrations();
+    const { db } = runSyncMigrations();
     const cols = getColumns(db, 'document_chunks');
     const colNames = cols.map((c) => c.name);
     expect(colNames).toEqual(
@@ -192,7 +223,7 @@ describe('Migration 002 - Schema validation', () => {
   });
 
   it('idx_chunks_doc_id index exists', () => {
-    const { db } = runAllMigrations();
+    const { db } = runSyncMigrations();
     const indexes = db.prepare('PRAGMA index_list(document_chunks)').all() as {
       name: string;
     }[];
@@ -201,7 +232,7 @@ describe('Migration 002 - Schema validation', () => {
   });
 
   it('foreign key cascade: deleting a document deletes its chunks', () => {
-    const { db } = runAllMigrations();
+    const { db } = runSyncMigrations();
     db.pragma('foreign_keys = ON');
 
     db.prepare(
@@ -224,30 +255,115 @@ describe('Migration 002 - Schema validation', () => {
   });
 });
 
+describe('Migration 003 - R2 content migration', () => {
+  it('migrates document content from SQL to R2', async () => {
+    const { env, stored } = makeMockR2Env();
+    const { db } = await runAllMigrations(env);
+
+    // After migration 003, content column should be dropped — documents table should not have it
+    const cols = getColumns(db, 'documents');
+    const colNames = cols.map((c) => c.name);
+    expect(colNames).not.toContain('content');
+  });
+
+  it('drops chunk_text column from document_chunks', async () => {
+    const { env } = makeMockR2Env();
+    const { db } = await runAllMigrations(env);
+
+    const cols = getColumns(db, 'document_chunks');
+    const colNames = cols.map((c) => c.name);
+    expect(colNames).not.toContain('chunk_text');
+  });
+
+  it('stores existing document content in R2 during migration', async () => {
+    const { env, stored } = makeMockR2Env();
+    const { db, sql } = makeSql();
+
+    // Run migrations 001 and 002 first
+    for (const [version, up] of MIGRATIONS) {
+      if (version === '003') break;
+      await up(sql, env, dummyWallet);
+    }
+
+    // Insert a document with content (pre-migration 003 state)
+    db.prepare(
+      "INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at) VALUES ('doc1', 'Test Doc', 'Hello world content', 19, 1, 10, 1000)",
+    ).run();
+
+    // Now run migration 003
+    const migration003 = MIGRATIONS.find(([v]) => v === '003');
+    await migration003![1](sql, env, dummyWallet);
+
+    // Verify content was written to R2
+    expect(stored.has(`documents/${dummyWallet.toLowerCase()}/doc1`)).toBe(true);
+    expect(stored.get(`documents/${dummyWallet.toLowerCase()}/doc1`)).toBe('Hello world content');
+  });
+
+  it('handles empty documents table gracefully', async () => {
+    const { env, stored } = makeMockR2Env();
+    const { db } = await runAllMigrations(env);
+
+    // No documents inserted — migration should still succeed
+    expect(stored.size).toBe(0);
+  });
+
+  it('aborts migration if R2 write fails', async () => {
+    const env = {
+      RAG_STORAGE: {
+        put: vi.fn(async () => { throw new Error('R2 unavailable'); }),
+        get: vi.fn(async () => null),
+        delete: vi.fn(async () => {}),
+      },
+    } as unknown as Env;
+
+    const { db, sql } = makeSql();
+    // Run 001 and 002
+    for (const [version, up] of MIGRATIONS) {
+      if (version === '003') break;
+      await up(sql, env, dummyWallet);
+    }
+
+    // Insert a document
+    db.prepare(
+      "INSERT INTO documents (id, title, content, char_count, chunk_count, embedding_cost, created_at) VALUES ('doc1', 'Test', 'content', 7, 1, 5, 1000)",
+    ).run();
+
+    // Migration 003 should throw (R2 write failed)
+    const migration003 = MIGRATIONS.find(([v]) => v === '003');
+    await expect(migration003![1](sql, env, dummyWallet)).rejects.toThrow('R2 migration failed');
+
+    // Content column should still exist (migration did not complete)
+    const cols = getColumns(db, 'documents');
+    const colNames = cols.map((c) => c.name);
+    expect(colNames).toContain('content');
+  });
+});
+
 describe('Migration ordering and idempotency', () => {
   it('MIGRATIONS array has correct version numbers in order', () => {
     const versions = MIGRATIONS.map(([v]) => v);
-    expect(versions).toEqual(['001', '002']);
+    expect(versions).toEqual(['001', '002', '003']);
     // Verify sorted order
     const sorted = [...versions].sort();
     expect(versions).toEqual(sorted);
   });
 
-  it('running all migrations twice does not error', () => {
+  it('running sync migrations (001-002) twice does not error', () => {
     const { sql } = makeSql();
     expect(() => {
-      for (const [, up] of MIGRATIONS) {
-        up(sql);
+      for (const [version, up] of MIGRATIONS) {
+        if (version === '003') break;
+        up(sql, dummyEnv, dummyWallet);
       }
-      for (const [, up] of MIGRATIONS) {
-        up(sql);
+      for (const [version, up] of MIGRATIONS) {
+        if (version === '003') break;
+        up(sql, dummyEnv, dummyWallet);
       }
     }).not.toThrow();
   });
 
-  it('all migrations run successfully on a clean database', () => {
-    expect(() => {
-      runAllMigrations();
-    }).not.toThrow();
+  it('all migrations run successfully on a clean database', async () => {
+    const { env } = makeMockR2Env();
+    await expect(runAllMigrations(env)).resolves.toBeDefined();
   });
 });

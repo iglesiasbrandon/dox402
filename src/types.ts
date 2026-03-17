@@ -147,4 +147,5 @@ export interface Env {
   WALLET_REGISTRY: KVNamespace; // global wallet registry for admin tooling
   ADMIN_SECRET?: string;        // admin Bearer token (set via wrangler secret put)
   ANALYTICS?: AnalyticsEngineDataset; // Cloudflare Analytics Engine — fire-and-forget event tracking
+  RAG_STORAGE: R2Bucket;              // R2 bucket for RAG document content storage
 }

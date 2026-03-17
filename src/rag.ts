@@ -20,6 +20,59 @@ export interface TextChunk {
   text: string;
 }
 
+// ── R2 Document Storage ──────────────────────────────────────────────────────
+
+/** Build the R2 key for a document's content: `documents/{wallet}/{docId}` */
+export function r2DocKey(wallet: string, docId: string): string {
+  return `documents/${wallet.toLowerCase()}/${docId}`;
+}
+
+/**
+ * Store document content in R2. Returns true on success, false on failure.
+ * Never throws — caller decides how to handle failure.
+ */
+export async function storeDocumentContent(
+  env: Env, wallet: string, docId: string, content: string,
+): Promise<boolean> {
+  try {
+    await env.RAG_STORAGE.put(r2DocKey(wallet, docId), content);
+    return true;
+  } catch (err) {
+    console.error('[rag] R2 put failed for %s/%s:', wallet, docId, err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
+/**
+ * Read document content from R2. Returns null if not found or on error.
+ * Never throws — caller decides how to handle missing content.
+ */
+export async function getDocumentContent(
+  env: Env, wallet: string, docId: string,
+): Promise<string | null> {
+  try {
+    const obj = await env.RAG_STORAGE.get(r2DocKey(wallet, docId));
+    if (!obj) return null;
+    return await obj.text();
+  } catch (err) {
+    console.error('[rag] R2 get failed for %s/%s:', wallet, docId, err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+/**
+ * Delete document content from R2. Logs errors but never throws.
+ */
+export async function deleteDocumentContent(
+  env: Env, wallet: string, docId: string,
+): Promise<void> {
+  try {
+    await env.RAG_STORAGE.delete(r2DocKey(wallet, docId));
+  } catch (err) {
+    console.error('[rag] R2 delete failed for %s/%s:', wallet, docId, err instanceof Error ? err.message : String(err));
+  }
+}
+
 // ── Text Chunking ────────────────────────────────────────────────────────────
 
 /** Ordered list of separators for the recursive character text splitter. */
