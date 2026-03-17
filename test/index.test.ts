@@ -120,7 +120,7 @@ function makeMockDONamespace(opts?: {
   const handleBalance = vi.fn(async () => Response.json({ balance: 0 }));
   const handleHistory = vi.fn(async () => Response.json({ history: [] }));
   const handleClearHistory = vi.fn(async () => Response.json({ ok: true }));
-  const handleDocumentUpload = vi.fn(async () => Response.json({ id: 'mock-doc-id', title: 'test', charCount: 100, chunkCount: 1, createdAt: Date.now(), embeddingCostMicroUSDC: 1 }, { status: 201 }));
+  const handleDocumentUpload = vi.fn(async () => Response.json({ id: 'mock-doc-id', title: 'test', charCount: 100, chunkCount: 1, createdAt: Date.now(), embeddingCostTokens: 1 }, { status: 201 }));
   const handleDocumentList = vi.fn(async () => Response.json({ documents: [] }));
   const handleDocumentDelete = vi.fn(async () => Response.json({ ok: true, deletedChunks: 3 }));
 

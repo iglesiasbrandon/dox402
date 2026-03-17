@@ -167,8 +167,8 @@ if (depositRes.status !== 200) {
   const err = await depositRes.text();
   fail(`Expected 200, got ${depositRes.status}: ${err}`);
 }
-const depositBody = await depositRes.json() as { ok: boolean; credited: number; balance: number };
-pass(`Deposited ${depositBody.credited} µUSDC → balance: ${depositBody.balance}`);
+const depositBody = await depositRes.json() as { ok: boolean; credited: number; tokens: number };
+pass(`Deposited ${depositBody.credited} tokens → balance: ${depositBody.tokens}`);
 
 // ════════════════════════════════════════════════════════════════════════════════
 // Phase 6: Replay attack — same txHash → rejected
@@ -225,10 +225,10 @@ console.log('\n[8] Balance + history checks');
 const inferSucceeded = inferRes.status === 200;
 
 const balRes = await fetch(`${BASE_URL}/balance`, { headers: authHeaders() });
-const bal = await balRes.json() as { balance: number; totalDepositedMicroUSDC: number; totalSpentMicroUSDC: number; totalRequests: number };
-pass(`Balance: ${bal.balance} µUSDC (deposited: ${bal.totalDepositedMicroUSDC}, spent: ${bal.totalSpentMicroUSDC}, requests: ${bal.totalRequests})`);
-if (bal.totalDepositedMicroUSDC !== 1000) fail(`Expected 1000 deposited, got ${bal.totalDepositedMicroUSDC}`);
-pass('Credit accounting correct');
+const bal = await balRes.json() as { tokens: number; totalDeposited: number; totalSpent: number; totalRequests: number };
+pass(`Balance: ${bal.tokens} tokens (deposited: ${bal.totalDeposited}, spent: ${bal.totalSpent}, requests: ${bal.totalRequests})`);
+if (bal.totalDeposited !== 1000) fail(`Expected 1000 deposited, got ${bal.totalDeposited}`);
+pass('Token accounting correct');
 
 const histRes = await fetch(`${BASE_URL}/history`, { headers: authHeaders() });
 const hist = await histRes.json() as { history: Array<{ role: string; content: string; meta?: unknown }> };

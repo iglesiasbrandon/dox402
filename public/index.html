@@ -556,7 +556,7 @@
           Most payment-gated APIs bolt a database onto a stateless server — Postgres for balances, Redis for rate-limiting, a separate auth layer for identity. Durable Objects collapse all of that into a single primitive.
         </p>
         <p style="font-size:13px;color:var(--muted);line-height:1.65;margin:0">
-          Each wallet is routed to its own DO instance via <a href="https://developers.cloudflare.com/durable-objects/api/namespace/" target="_blank"><code>idFromName</code></a>. The Worker calls typed <a href="https://developers.cloudflare.com/durable-objects/api/rpc/" target="_blank">RPC methods</a> directly on the stub — no HTTP routing inside the DO, just plain function calls with full type safety. On activation, <a href="https://developers.cloudflare.com/durable-objects/api/base/#blockconcurrencywhile" target="_blank"><code>blockConcurrencyWhile()</code></a> in the constructor loads the wallet state from embedded SQLite once, before any request is served — eliminating per-request persistence overhead. Each instance owns its µUSDC balance exclusively — no shared state, no contention, no double-spend. Replay prevention uses a <code>seen_transactions</code> SQL table to atomically check tx hashes and top up the balance, at the edge, with no external infrastructure. The DO <a href="https://developers.cloudflare.com/durable-objects/api/alarms/" target="_blank">alarm</a> handles grace-mode re-verification of provisional deposits when the Base RPC is unreachable, and runs TTL-based cleanup of expired records.
+          Each wallet is routed to its own DO instance via <a href="https://developers.cloudflare.com/durable-objects/api/namespace/" target="_blank"><code>idFromName</code></a>. The Worker calls typed <a href="https://developers.cloudflare.com/durable-objects/api/rpc/" target="_blank">RPC methods</a> directly on the stub — no HTTP routing inside the DO, just plain function calls with full type safety. On activation, <a href="https://developers.cloudflare.com/durable-objects/api/base/#blockconcurrencywhile" target="_blank"><code>blockConcurrencyWhile()</code></a> in the constructor loads the wallet state from embedded SQLite once, before any request is served — eliminating per-request persistence overhead. Each instance owns its token balance exclusively — no shared state, no contention, no double-spend. Replay prevention uses a <code>seen_transactions</code> SQL table to atomically check tx hashes and top up the balance, at the edge, with no external infrastructure. The DO <a href="https://developers.cloudflare.com/durable-objects/api/alarms/" target="_blank">alarm</a> handles grace-mode re-verification of provisional deposits when the Base RPC is unreachable, and runs TTL-based cleanup of expired records.
         </p>
       </div>
 
@@ -676,7 +676,7 @@ POST   /auth/logout   clear session cookie
 <strong>Authenticated (Cookie or SIWX)</strong>
 POST   /infer     run inference (post-billed)
 POST   /deposit   top-up balance without inference
-GET    /balance   credit balance + usage stats
+GET    /balance   token balance + usage stats
 GET    /history   conversation messages + meta
 DELETE /history      clear conversation
 
@@ -700,14 +700,14 @@ POST   /documents/reindex re-upsert all document vectors
 
       <div class="readme-section">
         <div class="readme-h">Pricing</div>
-        <pre class="readme-pre">0.001 USDC → 1,000 credits (µUSDC)
+        <pre class="readme-pre">0.001 USDC → 1,000 tokens
 
   Model             Context     Cost
-  Llama 3.1 8B       7,968 tok  ~8–10 cr/req
-  Llama 3.3 70B     24,000 tok  ~9–13 cr/req
-  Gemma 3 12B        8,000 tok  ~8–10 cr/req
-  Mistral 7B         8,000 tok  ~4–8 cr/req
-  DeepSeek R1 32B   80,000 tok  ~10–25 cr/req</pre>
+  Llama 3.1 8B       7,968 tok  ~8–10 tokens/req
+  Llama 3.3 70B     24,000 tok  ~9–13 tokens/req
+  Gemma 3 12B        8,000 tok  ~8–10 tokens/req
+  Mistral 7B         8,000 tok  ~4–8 tokens/req
+  DeepSeek R1 32B   80,000 tok  ~10–25 tokens/req</pre>
       </div>
 
       <div class="readme-section">
@@ -744,14 +744,14 @@ POST   /documents/reindex re-upsert all document vectors
       <div class="rp-title">Try it</div>
       <div class="balance-pill" id="pill">
         <span class="n" id="pillN">—</span>
-        <button class="pill-add-btn" id="pillAddBtn" title="Add credits">+</button>
+        <button class="pill-add-btn" id="pillAddBtn" title="Add tokens">+</button>
       </div>
     </div>
 
     <!-- Inline top-up panel (expands below the pill when + is clicked) -->
     <div class="topup-inline" id="topupInline">
       <div class="topup-inline-hd">
-        <span class="topup-inline-title">Add Credits</span>
+        <span class="topup-inline-title">Add Tokens</span>
         <span class="topup-inline-bal" id="topupBal">—</span>
       </div>
       <div class="topup-presets">
@@ -779,7 +779,7 @@ POST   /documents/reindex re-upsert all document vectors
                placeholder="e.g. 0.025" />
       </div>
       <div class="topup-actions">
-        <button class="btn-pay" id="topupBtn">Add Credits →</button>
+        <button class="btn-pay" id="topupBtn">Add Tokens →</button>
         <button class="btn-ghost" id="topupCancelBtn">Cancel</button>
       </div>
       <div id="topupStatus"></div>
@@ -1124,7 +1124,7 @@ POST   /documents/reindex re-upsert all document vectors
   }
 
   // ── Balance ────────────────────────────────────────────────────────────────
-  const fmtBalance = µ => (+(µ ?? 0)).toLocaleString() + ' credits';
+  const fmtBalance = µ => (+(µ ?? 0)).toLocaleString() + ' tokens';
 
   // Schedule a /balance refresh after inference completes (deduction happens async on server).
   function refreshBalanceAfterInference() {
@@ -1144,7 +1144,7 @@ POST   /documents/reindex re-upsert all document vectors
       if (res.status === 401) { handleSessionExpired(); return null; }
       if (!res.ok) return null;
       const d = await res.json();
-      const bal = +(d?.balance ?? 0);
+      const bal = +(d?.tokens ?? 0);
       document.getElementById('pillN').textContent = fmtBalance(bal);
       return bal;
     } catch (_) { return null; }
@@ -1176,7 +1176,7 @@ POST   /documents/reindex re-upsert all document vectors
     }
   }, 60_000); // check every 60 s
 
-  // ── Credit estimation ──────────────────────────────────────────────────────
+  // ── Token estimation ───────────────────────────────────────────────────────
   function updateEstimate() {
     const prompt      = document.getElementById('promptIn').value;
     const promptChars = countChars(prompt);
@@ -1193,7 +1193,7 @@ POST   /documents/reindex re-upsert all document vectors
     if (ragOn) parts.push(`${ragChars.toLocaleString()} files`);
     document.getElementById('estTokens').textContent = parts.join(' · ') + ' chars';
 
-    // Credit calculation: chars ÷ 4 ≈ tokens for neuron rate lookup
+    // Token cost calculation: chars ÷ 4 ≈ LLM tokens for neuron rate lookup
     const totalInToks = Math.ceil(totalChars / 4);
     const model  = document.getElementById('modelSelect').value;
     const rates  = NEURON_RATES[model] || NEURON_RATES['@cf/meta/llama-3.1-8b-instruct'];
@@ -1230,7 +1230,7 @@ POST   /documents/reindex re-upsert all document vectors
       rows += `<span style="color:var(--red);grid-column:1/-1;font-size:11px">Input exceeds model limit. Clear history, remove files, or switch to a larger model.</span>`;
     }
     rows += `<span style="color:var(--muted)">Output (estimated)</span> <span style="color:var(--muted)">${escapeHtml((outMinToks*4).toLocaleString())}–${escapeHtml((outMaxToks*4).toLocaleString())} chars</span>`;
-    rows += `<span style="color:var(--muted)">Credits</span> <span style="color:var(--accent)">~${escapeHtml(costMinCr === costMaxCr ? String(costMinCr) : costMinCr + '–' + costMaxCr)}</span>`;
+    rows += `<span style="color:var(--muted)">Tokens</span> <span style="color:var(--accent)">~${escapeHtml(costMinCr === costMaxCr ? String(costMinCr) : costMinCr + '–' + costMaxCr)}</span>`;
 
     document.getElementById('estBody').innerHTML = `
       <div style="display:grid;grid-template-columns:1fr auto;gap:4px 24px;align-items:baseline">
@@ -1315,7 +1315,7 @@ POST   /documents/reindex re-upsert all document vectors
       if (!receipt || receipt.status !== '0x1') throw new Error('Transaction reverted');
 
       // 6. Sign proof and submit
-      setPayStatus('Confirmed! Sign proof to credit account…');
+      setPayStatus('Confirmed! Sign proof to add tokens…');
       hidePayCard();
       const proof = {
         txHash,
@@ -1493,7 +1493,7 @@ POST   /documents/reindex re-upsert all document vectors
   }
 
   // ── Top-up inline panel ────────────────────────────────────────────────────
-  let topupMicro = 1000; // µUSDC selected; default = 1,000 credits (0.001 USDC)
+  let topupMicro = 1000; // tokens selected; default = 1,000 tokens (0.001 USDC)
 
   function toggleTopUp() {
     const panel = document.getElementById('topupInline');
@@ -1529,7 +1529,7 @@ POST   /documents/reindex re-upsert all document vectors
   function onTopupCustomInput() {
     const val = parseFloat(document.getElementById('topupCustom').value);
     if (val > 0) {
-      topupMicro = Math.round(val * 1_000_000); // USDC → µUSDC (1 USDC = 1,000,000 µUSDC)
+      topupMicro = Math.round(val * 1_000_000); // USDC → tokens (1 USDC = 1,000,000 tokens)
       document.querySelectorAll('.topup-preset').forEach(p => p.classList.remove('sel'));
     }
   }
@@ -1542,7 +1542,7 @@ POST   /documents/reindex re-upsert all document vectors
 
   async function topUpWithWallet() {
     if (!wallet || !window.ethereum) return;
-    if (topupMicro < 1000) { setTopupStatus('Minimum top-up is 1,000 credits (0.001 USDC).'); return; }
+    if (topupMicro < 1000) { setTopupStatus('Minimum top-up is 1,000 tokens (0.001 USDC).'); return; }
     const btn = document.getElementById('topupBtn');
     btn.disabled = true;
 
@@ -1600,7 +1600,7 @@ POST   /documents/reindex re-upsert all document vectors
       if (!receipt || receipt.status !== '0x1') throw new Error('Transaction reverted');
 
       // Submit deposit proof with retry (server RPC may lag behind wallet RPC)
-      setTopupStatus('Confirmed! Crediting account…');
+      setTopupStatus('Confirmed! Adding tokens…');
       const proof = {
         txHash, from: actualFrom,
         amount: String(topupMicro),
@@ -1628,9 +1628,9 @@ POST   /documents/reindex re-upsert all document vectors
       if (!depData) throw new Error('Server could not verify transaction after retries. Your USDC was sent — contact support with txHash: ' + txHash);
 
       // Use balance from deposit response directly (avoids extra /balance call that could fail)
-      const bal = depData.balance ?? null;
+      const bal = depData.tokens ?? null;
       if (bal !== null) document.getElementById('pillN').textContent = fmtBalance(bal);
-      setTopupStatus('✓ Credits added! Balance: ' + (bal !== null ? fmtBalance(bal) : 'updated'));
+      setTopupStatus('✓ Tokens added! Balance: ' + (bal !== null ? fmtBalance(bal) : 'updated'));
       btn.disabled = false;
       setTimeout(hideTopUp, 1800);
 
@@ -1897,7 +1897,7 @@ POST   /documents/reindex re-upsert all document vectors
       }
 
       const meta = await res.json();
-      statusEl.textContent = `Uploaded: ${meta.chunkCount} chunks, cost ${meta.embeddingCostMicroUSDC} µUSDC`;
+      statusEl.textContent = `Uploaded: ${meta.chunkCount} chunks, cost ${meta.embeddingCostTokens} tokens`;
       statusEl.style.color = 'var(--green)';
 
       // Clear form

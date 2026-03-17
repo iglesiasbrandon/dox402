@@ -655,7 +655,7 @@ export class InferenceGate extends DurableObject<Env> {
     }
 
     return Response.json(
-      { ok: true, credited: creditAmount, balance: newBalance, provisional: isProvisional },
+      { ok: true, credited: creditAmount, tokens: newBalance, provisional: isProvisional },
       { headers: { 'Cache-Control': 'no-store' } },
     );
   }
@@ -676,12 +676,12 @@ export class InferenceGate extends DurableObject<Env> {
         FROM wallet_state WHERE id = 1`).toArray()[0]!;
 
     return Response.json({
-      balance:                  row.balance,
-      totalDepositedMicroUSDC:  row.total_deposited,
-      totalSpentMicroUSDC:      row.total_spent,
-      totalRequests:            row.total_requests,
-      totalFailedRequests:      row.total_failed_requests,
-      provisionalMicroUSDC:     row.provisional_balance,
+      tokens:              row.balance,
+      totalDeposited:      row.total_deposited,
+      totalSpent:          row.total_spent,
+      totalRequests:       row.total_requests,
+      totalFailedRequests: row.total_failed_requests,
+      provisionalTokens:   row.provisional_balance,
     }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
@@ -781,7 +781,7 @@ export class InferenceGate extends DurableObject<Env> {
       charCount: body.content.length,
       chunkCount: chunks.length,
       createdAt: Date.now(),
-      embeddingCostMicroUSDC: actualCost,
+      embeddingCostTokens: actualCost,
     };
 
     return Response.json(meta, { status: 201 });
@@ -802,7 +802,7 @@ export class InferenceGate extends DurableObject<Env> {
       charCount: r.char_count,
       chunkCount: r.chunk_count,
       createdAt: r.created_at,
-      embeddingCostMicroUSDC: r.embedding_cost,
+      embeddingCostTokens: r.embedding_cost,
     }));
 
     return Response.json({ documents });

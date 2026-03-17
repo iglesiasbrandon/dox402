@@ -1,5 +1,6 @@
+// 1 token = 1 µUSDC = $0.000001 — tokens are the user-facing billing unit
 export const PRICE_USDC_UNITS      = '1000';                         // $0.001 USDC per payment
-export const PAYMENT_MICRO_USDC    = 1000;                           // µUSDC added per payment (1 µUSDC = $0.000001)
+export const PAYMENT_MICRO_USDC    = 1000;                           // tokens added per payment (1 token = 1 µUSDC = $0.000001)
 export const MICRO_USDC_PER_NEURON = 0.011;                          // $0.011/1M neurons → 0.011 µUSDC/neuron
 export const OVERHEAD_MICRO_USDC   = 6;                               // estimated DO + Workers overhead per request (µUSDC)
 export const TARGET_MARGIN         = 0.15;                             // target gross margin (15%)

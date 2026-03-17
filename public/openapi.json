@@ -203,7 +203,7 @@
       "post": {
         "summary": "Run AI inference (streamed)",
         "operationId": "postInfer",
-        "description": "Submit a prompt for AI text generation. Returns a Server-Sent Events stream with heartbeat keepalive (:keepalive comments every 15s of inactivity) and a 2-minute max-duration guard. Requires authentication and a positive credit balance. If balance is zero and no payment proof is provided, returns 402 with payment instructions and SIWX extension for auth discovery.",
+        "description": "Submit a prompt for AI text generation. Returns a Server-Sent Events stream with heartbeat keepalive (:keepalive comments every 15s of inactivity) and a 2-minute max-duration guard. Requires authentication and a positive token balance. If balance is zero and no payment proof is provided, returns 402 with payment instructions and SIWX extension for auth discovery.",
         "security": [
           { "BearerAuth": [] },
           { "CookieAuth": [] },
@@ -270,9 +270,9 @@
     },
     "/deposit": {
       "post": {
-        "summary": "Top up credit balance with USDC payment proof",
+        "summary": "Top up token balance with USDC payment proof",
         "operationId": "postDeposit",
-        "description": "Submit an on-chain USDC payment proof to add credits to your balance without running inference. Supports grace mode: if RPC is unreachable, credits are provisionally granted and verified asynchronously.",
+        "description": "Submit an on-chain USDC payment proof to add tokens to your balance without running inference. Supports grace mode: if RPC is unreachable, tokens are provisionally granted and verified asynchronously.",
         "security": [{ "BearerAuth": [] }, { "CookieAuth": [] }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DepositRequest" } } } },
         "responses": {
@@ -282,9 +282,9 @@
               "type": "object",
               "properties": {
                 "ok": { "type": "boolean", "const": true },
-                "credited": { "type": "integer", "description": "uUSDC credited from this deposit" },
-                "balance": { "type": "integer", "description": "New total balance in uUSDC" },
-                "provisional": { "type": "boolean", "description": "True if credit was granted provisionally (RPC unreachable)" }
+                "credited": { "type": "integer", "description": "Tokens credited from this deposit" },
+                "tokens": { "type": "integer", "description": "New total token balance" },
+                "provisional": { "type": "boolean", "description": "True if tokens were granted provisionally (RPC unreachable)" }
               }
             } } }
           },
@@ -295,7 +295,7 @@
     },
     "/balance": {
       "get": {
-        "summary": "Get credit balance and usage stats",
+        "summary": "Get token balance and usage stats",
         "operationId": "getBalance",
         "security": [{ "BearerAuth": [] }, { "CookieAuth": [] }],
         "responses": {
@@ -447,7 +447,7 @@
           "paymentAddress": { "type": "string", "description": "USDC receiving address" },
           "asset": { "type": "string", "const": "USDC" },
           "amount": { "type": "string", "description": "USDC amount in smallest unit (6 decimals). 1000 = $0.001" },
-          "balanceMicroUSDC": { "type": "integer", "description": "uUSDC credits added per payment" },
+          "balanceTokens": { "type": "integer", "description": "Tokens added per payment" },
           "maxAgeSeconds": { "type": "integer", "description": "Payment proof validity window" },
           "description": { "type": "string" },
           "extensions": { "type": "object", "properties": { "sign-in-with-x": { "$ref": "#/components/schemas/SiwxExtension" } } }
@@ -488,12 +488,12 @@
       "BalanceResponse": {
         "type": "object",
         "properties": {
-          "balance": { "type": "integer", "description": "Current credit balance in uUSDC" },
-          "totalDepositedMicroUSDC": { "type": "integer" },
-          "totalSpentMicroUSDC": { "type": "integer" },
+          "tokens": { "type": "integer", "description": "Current token balance" },
+          "totalDeposited": { "type": "integer", "description": "Total tokens deposited" },
+          "totalSpent": { "type": "integer", "description": "Total tokens spent on inference" },
           "totalRequests": { "type": "integer" },
           "totalFailedRequests": { "type": "integer", "description": "Requests where billing was skipped (AI failure, empty response, stream error)" },
-          "provisionalMicroUSDC": { "type": "integer", "description": "Outstanding provisionally credited uUSDC pending RPC re-verification" }
+          "provisionalTokens": { "type": "integer", "description": "Outstanding provisional tokens pending RPC re-verification" }
         }
       },
       "DocumentMeta": {
@@ -505,7 +505,7 @@
           "charCount": { "type": "integer", "description": "Character count of the original text" },
           "chunkCount": { "type": "integer", "description": "Number of text chunks created for embedding" },
           "createdAt": { "type": "integer", "description": "Unix timestamp (ms) when the document was uploaded" },
-          "embeddingCostMicroUSDC": { "type": "integer", "description": "Embedding cost deducted from balance in uUSDC" }
+          "embeddingCostTokens": { "type": "integer", "description": "Embedding cost deducted from balance in tokens" }
         }
       },
       "ConversationMessage": {
@@ -513,7 +513,7 @@
         "properties": {
           "role": { "type": "string", "enum": ["user", "assistant"] },
           "content": { "type": "string" },
-          "meta": { "type": "object", "description": "Usage metadata (assistant messages only)", "properties": { "cost": { "type": "number", "description": "uUSDC charged for this response" }, "model": { "type": "string", "description": "Workers AI model ID used" } } }
+          "meta": { "type": "object", "description": "Usage metadata (assistant messages only)", "properties": { "cost": { "type": "number", "description": "Tokens charged for this response" }, "model": { "type": "string", "description": "Workers AI model ID used" } } }
         }
       },
       "PaymentInfo": {
@@ -523,7 +523,8 @@
           "network": { "type": "string", "example": "base-mainnet" },
           "asset": { "type": "string", "const": "USDC" },
           "usdcContract": { "type": "string", "description": "USDC ERC-20 contract address on Base" },
-          "minimumMicroUSDC": { "type": "integer", "description": "Minimum top-up amount in uUSDC" }
+          "minimumTokens": { "type": "integer", "description": "Minimum top-up amount in tokens" },
+          "tokensPerUSDC": { "type": "integer", "description": "Tokens per 1 USDC (1,000,000)" }
         }
       }
     }

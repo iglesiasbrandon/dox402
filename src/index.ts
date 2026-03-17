@@ -151,7 +151,8 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
         network:        env.NETWORK,
         asset:          'USDC',
         usdcContract:   USDC_CONTRACT,
-        minimumMicroUSDC: 1000,  // 0.001 USDC minimum top-up
+        minimumTokens:    1000,  // 0.001 USDC minimum top-up = 1,000 tokens
+        tokensPerUSDC:    1_000_000,  // 1 USDC = 1,000,000 tokens
       }, { headers: { 'Cache-Control': 'no-store' } });
     }
 

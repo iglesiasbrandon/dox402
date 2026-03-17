@@ -93,7 +93,7 @@ describe('build402Response', () => {
     expect(body.paymentAddress).toBe(PAYMENT_ADDRESS);
     expect(body.asset).toBe('USDC');
     expect(body.amount).toBe(PRICE_USDC_UNITS);
-    expect(body.balanceMicroUSDC).toBe(PAYMENT_MICRO_USDC);
+    expect(body.balanceTokens).toBe(PAYMENT_MICRO_USDC);
   });
 
   it('has PAYMENT-REQUIRED header that decodes to same JSON', async () => {

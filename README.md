@@ -90,7 +90,7 @@ Authenticated endpoints accept either an `Authorization: Bearer <token>` header 
 |---|---|
 | `POST /infer` | Run inference (post-billed from balance, SSE stream) |
 | `POST /deposit` | Top-up balance with payment proof |
-| `GET /balance` | Credit balance + usage stats |
+| `GET /balance` | Token balance + usage stats |
 | `GET /history` | Conversation messages + metadata |
 | `DELETE /history` | Clear conversation |
 | `POST /documents` | Upload document for RAG (embedding cost deducted) |
@@ -129,12 +129,12 @@ Total input (prompt + conversation history + RAG file context) is validated agai
 
 ## Architecture
 
-- **Durable Object** (`InferenceGate`): one instance per wallet address with embedded SQLite storage. Holds credit balance, conversation history, rate limits, and replay-prevention data. All credit updates happen inside `storage.transactionSync()` to prevent race conditions. New DOs are co-located in Eastern North America (`locationHint: 'enam'`) to minimize latency to Base chain RPC providers.
+- **Durable Object** (`InferenceGate`): one instance per wallet address with embedded SQLite storage. Holds token balance, conversation history, rate limits, and replay-prevention data. All balance updates happen inside `storage.transactionSync()` to prevent race conditions. New DOs are co-located in Eastern North America (`locationHint: 'enam'`) to minimize latency to Base chain RPC providers.
 - **Worker** (`index.ts`): validates wallet address format, authenticates via SIWE session tokens or SIWX headers, routes to the correct DO instance via typed RPC stubs.
 - **KV Registry** (`WALLET_REGISTRY`): global index of all active wallet DO instances, updated on first use via fire-and-forget `ctx.waitUntil()` calls. Powers the admin endpoints for fleet visibility.
 - **Replay prevention**: each payment hash stored in the `seen_transactions` SQL table with automatic 1-hour TTL cleanup via DO alarms.
 - **Authentication**: SIWE (EIP-4361) proves wallet ownership; HMAC-SHA256 JWTs delivered as HttpOnly cookies (browser) or Bearer tokens (API). SIWX single-request auth also supported for x402 clients.
-- **Verification**: Tier 1 structural checks + Tier 2 on-chain RPC receipt verification via `eth_getTransactionReceipt`. Grace mode provides provisional credit when RPC is unreachable, with automatic alarm-based re-verification.
+- **Verification**: Tier 1 structural checks + Tier 2 on-chain RPC receipt verification via `eth_getTransactionReceipt`. Grace mode provides provisional tokens when RPC is unreachable, with automatic alarm-based re-verification.
 - **Streaming**: SSE responses with heartbeat keepalive (`:keepalive` comments every 15s of inactivity) and a 2-minute max-duration guard to prevent runaway streams. Backpressure is handled naturally via `await writer.write()`.
-- **Billing safeguards**: failed AI responses (empty, error JSON, stream errors) are detected and not billed — credits are only deducted for successful inference.
+- **Billing safeguards**: failed AI responses (empty, error JSON, stream errors) are detected and not billed — tokens are only deducted for successful inference.
 - **RAG (Retrieval-Augmented Generation)**: per-wallet document knowledge base powered by Cloudflare Vectorize and Workers AI embeddings (`bge-base-en-v1.5`). Documents are chunked (1600 chars, 200 char overlap), embedded, and stored in a shared Vectorize index with per-wallet metadata filtering. Opt-in via `useRag: true` on `/infer` — relevant chunks are retrieved (top-5, cosine similarity ≥ 0.45) and injected as system context. Total input (prompt + history + RAG context) is validated against each model's context window. RAG failure is non-fatal.

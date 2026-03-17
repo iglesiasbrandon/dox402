@@ -356,10 +356,10 @@ describe('InferenceGate — credit refund on AI failure', () => {
 
     // Now check /balance via RPC
     const balanceRes = await gate.handleBalance();
-    const body = await balanceRes.json() as { totalFailedRequests: number; balance: number };
+    const body = await balanceRes.json() as { totalFailedRequests: number; tokens: number };
 
     expect(body.totalFailedRequests).toBe(1);
-    expect(body.balance).toBe(1000);
+    expect(body.tokens).toBe(1000);
   });
 });
 
@@ -664,16 +664,16 @@ describe('InferenceGate — alarm re-verification', () => {
     expect(getBalance(storage)).toBe(1000); // 3000 - 2000 (reversed)
   });
 
-  it('exposes provisionalMicroUSDC in /balance response', async () => {
+  it('exposes provisionalTokens in /balance response', async () => {
     const { gate, storage } = makeTestDO();
     storage.sql.exec(
       'UPDATE wallet_state SET balance = 2000, provisional_balance = 1000 WHERE id = 1',
     );
 
     const res = await gate.handleBalance();
-    const body = await res.json() as { provisionalMicroUSDC: number };
+    const body = await res.json() as { provisionalTokens: number };
 
-    expect(body.provisionalMicroUSDC).toBe(1000);
+    expect(body.provisionalTokens).toBe(1000);
   });
 });
 
@@ -991,7 +991,7 @@ describe('InferenceGate — document CRUD', () => {
     expect(body.charCount).toBe(42);
     expect(body.chunkCount).toBeGreaterThanOrEqual(1);
     expect(body.createdAt).toBeDefined();
-    expect(body.embeddingCostMicroUSDC).toBeGreaterThan(0);
+    expect(body.embeddingCostTokens).toBeGreaterThan(0);
   });
 
   it('handleDocumentUpload deducts embedding cost from balance', async () => {

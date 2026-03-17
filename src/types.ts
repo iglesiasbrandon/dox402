@@ -3,7 +3,7 @@ export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system';  // 'system' used for RAG context injection
   content: string;
   meta?: {                 // usage metadata (assistant messages only)
-    cost: number;          // µUSDC charged for this response
+    cost: number;          // tokens charged for this response (1 token = 1 µUSDC)
     model: string;         // Workers AI model ID used
   };
 }
@@ -16,7 +16,7 @@ export interface PaymentRequired {
   paymentAddress: string;    // USDC receiving address
   asset: 'USDC';
   amount: string;            // USDC in smallest unit (e.g. '1000' = $0.001)
-  balanceMicroUSDC: number; // µUSDC added to balance per payment
+  balanceTokens: number;    // tokens added to balance per payment (1 token = 1 µUSDC)
   maxAgeSeconds: number;     // proof validity window in seconds
   description: string;
 }
@@ -88,7 +88,7 @@ export interface VerifyProofResult {
 // Stored in DO as `pending:{txHash}` — tracks a provisionally credited payment awaiting RPC re-verification
 export interface PendingVerification {
   proof: PaymentProof;
-  creditedAmount: number;       // µUSDC provisionally added to balance
+  creditedAmount: number;       // tokens provisionally added to balance
   createdAt: number;            // Date.now() when grace mode activated
   retryCount: number;           // number of alarm-based re-verification attempts so far
   status: 'pending' | 'confirmed' | 'reversed' | 'expired';
@@ -130,7 +130,7 @@ export interface DocumentMeta {
   charCount: number;
   chunkCount: number;
   createdAt: number;
-  embeddingCostMicroUSDC: number;
+  embeddingCostTokens: number;
 }
 
 // Env bindings (matches wrangler.toml)

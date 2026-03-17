@@ -37,7 +37,7 @@
     },
     {
       "name": "infer",
-      "description": "Run AI text generation. Returns an SSE stream. Requires authentication and a positive credit balance.",
+      "description": "Run AI text generation. Returns an SSE stream. Requires authentication and a positive token balance.",
       "requires": ["authenticate"],
       "steps": [
         {
@@ -57,7 +57,7 @@
     },
     {
       "name": "check-balance",
-      "description": "Query current credit balance and usage statistics",
+      "description": "Query current token balance and usage statistics",
       "requires": ["authenticate"],
       "steps": [
         {
@@ -65,9 +65,9 @@
           "method": "GET",
           "headers": { "Authorization": "Bearer $token" },
           "output": {
-            "balance": "$.balance",
-            "totalDeposited": "$.totalDepositedMicroUSDC",
-            "totalSpent": "$.totalSpentMicroUSDC",
+            "tokens": "$.tokens",
+            "totalDeposited": "$.totalDeposited",
+            "totalSpent": "$.totalSpent",
             "totalRequests": "$.totalRequests"
           }
         }
@@ -112,7 +112,7 @@
     },
     {
       "name": "deposit",
-      "description": "Top up credit balance by submitting an on-chain USDC payment proof",
+      "description": "Top up token balance by submitting an on-chain USDC payment proof",
       "requires": ["authenticate"],
       "steps": [
         {
@@ -135,7 +135,7 @@
           "description": "Submit proof of on-chain USDC transfer. The proof must be signed by the wallet and the transaction must be confirmed on Base Mainnet.",
           "output": {
             "credited": "$.credited",
-            "balance": "$.balance"
+            "tokens": "$.tokens"
           }
         }
       ]

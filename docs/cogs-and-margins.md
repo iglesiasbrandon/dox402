@@ -2,7 +2,7 @@
 
 ## Overview
 
-Dox402 operates as an **inference gateway** — users pay USDC on Base Mainnet, the system converts payments into credits, and credits are consumed per request. The pricing formula accounts for both variable neuron costs and fixed infrastructure overhead, targeting a **15% gross margin** on every request.
+Dox402 operates as an **inference gateway** — users pay USDC on Base Mainnet, the system converts payments into tokens, and tokens are consumed per request. The pricing formula accounts for both variable neuron costs and fixed infrastructure overhead, targeting a **15% gross margin** on every request.
 
 ---
 
@@ -138,7 +138,7 @@ This guarantees at least 15% gross margin on every request, regardless of model 
 
 For a "typical" request (500 input tokens, 300 output tokens):
 
-| Model | Revenue (credits) | Neuron COGS | DO COGS | Total COGS | Gross Margin |
+| Model | Revenue (tokens) | Neuron COGS | DO COGS | Total COGS | Gross Margin |
 |-------|-------------------|-------------|---------|------------|-------------|
 | Mistral 7B | 8 | 0.07 | 5.2 | 5.3 | +34% |
 | Llama 3.1 8B | 8 | 0.39 | 5.2 | 5.6 | +30% |
@@ -148,7 +148,7 @@ For a "typical" request (500 input tokens, 300 output tokens):
 
 At higher token volumes (2,000 input, 800 output):
 
-| Model | Revenue (credits) | Neuron COGS | DO COGS | Total COGS | Gross Margin |
+| Model | Revenue (tokens) | Neuron COGS | DO COGS | Total COGS | Gross Margin |
 |-------|-------------------|-------------|---------|------------|-------------|
 | Mistral 7B | 8 | 0.37 | 5.2 | 5.6 | +30% |
 | Llama 3.1 8B | 9 | 1.22 | 5.2 | 6.4 | +29% |
@@ -172,10 +172,10 @@ TARGET_MARGIN       = 0.15  // target gross margin (15%)
 
 | TARGET_MARGIN | Llama 8B (typical) | DeepSeek R1 (heavy) | Effect |
 |---------------|-------------------|---------------------|--------|
-| 0.10 | 8 credits | 19 credits | Thinner margin, cheaper for users |
-| 0.15 (current) | 8 credits | 20 credits | Balanced |
-| 0.25 | 9 credits | 22 credits | Higher margin, more headroom |
-| 0.50 | 13 credits | 33 credits | Premium pricing |
+| 0.10 | 8 tokens | 19 tokens | Thinner margin, cheaper for users |
+| 0.15 (current) | 8 tokens | 20 tokens | Balanced |
+| 0.25 | 9 tokens | 22 tokens | Higher margin, more headroom |
+| 0.50 | 13 tokens | 33 tokens | Premium pricing |
 
 ---
 
@@ -221,4 +221,4 @@ RAG context is no longer hard-capped; the total input (prompt + history + files)
 
 ## Key Takeaway
 
-The margin-targeting formula `price = ceil((neuron_cost + overhead) / (1 − margin))` ensures every request is profitable. The dominant cost for cheap models is Durable Object overhead (~5.2 µUSDC), not inference. By explicitly accounting for this overhead and applying a configurable margin, the system is sustainable at any scale. A 1,000-credit deposit ($0.001 USDC) buys ~125 requests on cheap models — the product remains extremely inexpensive.
+The margin-targeting formula `price = ceil((neuron_cost + overhead) / (1 − margin))` ensures every request is profitable. The dominant cost for cheap models is Durable Object overhead (~5.2 µUSDC), not inference. By explicitly accounting for this overhead and applying a configurable margin, the system is sustainable at any scale. A 1,000-token deposit ($0.001 USDC) buys ~125 requests on cheap models — the product remains extremely inexpensive.

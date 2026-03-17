@@ -20,21 +20,21 @@
     {
       "id": "infer",
       "name": "AI Inference",
-      "description": "Run AI text generation with conversation memory. Supports Llama 3.1 8B, Llama 3.3 70B, Gemma 3 12B, Mistral 7B, DeepSeek R1 32B. Returns SSE stream. Costs ~8-13 uUSDC per request depending on model and length.",
+      "description": "Run AI text generation with conversation memory. Supports Llama 3.1 8B, Llama 3.3 70B, Gemma 3 12B, Mistral 7B, DeepSeek R1 32B. Returns SSE stream. Costs ~8-13 tokens per request depending on model and length.",
       "inputModes": ["application/json"],
       "outputModes": ["text/event-stream"]
     },
     {
       "id": "deposit",
-      "name": "Deposit Credits",
-      "description": "Top up inference credit balance by submitting an on-chain USDC payment proof. Minimum 0.001 USDC (1000 uUSDC credits).",
+      "name": "Deposit Tokens",
+      "description": "Top up inference token balance by submitting an on-chain USDC payment proof. Minimum 0.001 USDC (1,000 tokens).",
       "inputModes": ["application/json"],
       "outputModes": ["application/json"]
     },
     {
       "id": "balance",
       "name": "Check Balance",
-      "description": "Query current credit balance in uUSDC, total deposited, total spent, and lifetime request count.",
+      "description": "Query current token balance, total deposited, total spent, and lifetime request count.",
       "inputModes": [],
       "outputModes": ["application/json"]
     },
@@ -59,7 +59,7 @@
     "network": "base-mainnet",
     "asset": "USDC",
     "usdcContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    "minimumPayment": "0.001 USDC (1000 uUSDC credits)",
+    "minimumPayment": "0.001 USDC (1,000 tokens)",
     "paymentInfoEndpoint": "/payment-info"
   }
 }

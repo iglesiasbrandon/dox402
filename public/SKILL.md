@@ -9,7 +9,7 @@ Base URL: `https://inference-gate.iglesias-brandon.workers.dev`
 
 ## What This Service Does
 
-A payment-gated AI inference API built on Cloudflare Workers and Durable Objects. No signup, no API key -- authenticate with your Ethereum wallet, pay with USDC on Base Mainnet, and get streamed AI responses. Each wallet gets isolated credit balance, conversation history, and rate limiting via per-wallet Durable Objects with embedded SQLite storage.
+A payment-gated AI inference API built on Cloudflare Workers and Durable Objects. No signup, no API key -- authenticate with your Ethereum wallet, pay with USDC on Base Mainnet, and get streamed AI responses. Each wallet gets isolated token balance, conversation history, and rate limiting via per-wallet Durable Objects with embedded SQLite storage.
 
 ## Quick Start
 
@@ -43,7 +43,7 @@ After login via either method, all authenticated endpoints use the `ig_session` 
 | POST | /auth/logout | Cookie | Clear session cookie |
 | POST | /infer | Cookie/SIWX | AI inference (SSE stream) |
 | POST | /deposit | Cookie | Top up balance with payment proof |
-| GET | /balance | Cookie | Credit balance and usage stats |
+| GET | /balance | Cookie | Token balance and usage stats |
 | GET | /history | Cookie | Conversation messages |
 | DELETE | /history | Cookie | Clear conversation |
 | POST | /documents | Cookie | Upload document for RAG (embedding deducted from balance) |
@@ -55,11 +55,11 @@ After login via either method, all authenticated endpoints use the `ig_session` 
 
 | Model ID | Name | Context Window | Cost |
 |----------|------|---------------|------|
-| @cf/meta/llama-3.1-8b-instruct | Llama 3.1 8B | 7,968 tokens | ~8-10 uUSDC/request |
-| @cf/meta/llama-3.3-70b-instruct-fp8-fast | Llama 3.3 70B | 24,000 tokens | ~9-13 uUSDC/request |
-| @cf/google/gemma-3-12b-it | Gemma 3 12B | 8,000 tokens | ~8-10 uUSDC/request |
-| @cf/mistral/mistral-7b-instruct-v0.2 | Mistral 7B | 8,000 tokens | ~4-6 uUSDC/request |
-| @cf/deepseek-ai/deepseek-r1-distill-qwen-32b | DeepSeek R1 32B | 80,000 tokens | ~15-25 uUSDC/request |
+| @cf/meta/llama-3.1-8b-instruct | Llama 3.1 8B | 7,968 tokens | ~8-10 tokens/request |
+| @cf/meta/llama-3.3-70b-instruct-fp8-fast | Llama 3.3 70B | 24,000 tokens | ~9-13 tokens/request |
+| @cf/google/gemma-3-12b-it | Gemma 3 12B | 8,000 tokens | ~8-10 tokens/request |
+| @cf/mistral/mistral-7b-instruct-v0.2 | Mistral 7B | 8,000 tokens | ~4-6 tokens/request |
+| @cf/deepseek-ai/deepseek-r1-distill-qwen-32b | DeepSeek R1 32B | 80,000 tokens | ~15-25 tokens/request |
 
 Default model: `@cf/meta/llama-3.1-8b-instruct`
 
@@ -75,7 +75,7 @@ Default model: `@cf/meta/llama-3.1-8b-instruct`
 
 The signature is `personal_sign` over: `dox402 payment proof\ntxHash: ...\nfrom: ...\namount: ...\ntimestamp: ...`
 
-**Grace mode:** If the Base RPC is unreachable during payment verification, the server grants provisional credit that is automatically re-verified via a background alarm. The `X-Payment-Status: provisional` header indicates grace mode was used.
+**Grace mode:** If the Base RPC is unreachable during payment verification, the server grants provisional tokens that are automatically re-verified via a background alarm. The `X-Payment-Status: provisional` header indicates grace mode was used.
 
 ## Rate Limiting
 

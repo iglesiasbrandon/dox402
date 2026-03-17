@@ -43,9 +43,9 @@ export function build402Response(paymentAddress: string, siwxExtension?: SiwxExt
     paymentAddress,
     asset: 'USDC',
     amount: PRICE_USDC_UNITS,
-    balanceMicroUSDC: PAYMENT_MICRO_USDC,
+    balanceTokens: PAYMENT_MICRO_USDC,
     maxAgeSeconds: PROOF_MAX_AGE_SECS,
-    description: `Pay 0.001 USDC to add ${PAYMENT_MICRO_USDC} µUSDC to your inference balance`,
+    description: `Pay 0.001 USDC to add ${PAYMENT_MICRO_USDC.toLocaleString()} tokens to your inference balance`,
   };
 
   if (siwxExtension) {
