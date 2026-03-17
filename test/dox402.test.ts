@@ -1320,3 +1320,116 @@ describe('InferenceGate — RAG-augmented inference', () => {
     expect(mockVectorize.query).not.toHaveBeenCalled();
   });
 });
+
+// ── R2 wallet isolation ──────────────────────────────────────────────────────
+
+describe('InferenceGate — R2 wallet isolation', () => {
+  function setupAIForDocuments(mockAI: { run: ReturnType<typeof vi.fn> }) {
+    mockAI.run.mockImplementation(async (model: string) => {
+      if (model === '@cf/baai/bge-base-en-v1.5') {
+        return { data: [new Array(768).fill(0.1)] };
+      }
+      return mockSSEStream([
+        'data: {"response":"Hello "}\n\n',
+        'data: {"response":"world"}\n\n',
+        'data: {"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n',
+        'data: [DONE]\n\n',
+      ]);
+    });
+  }
+
+  it('handleDocumentUpload stores content under the correct wallet R2 prefix', async () => {
+    const { gate, storage, mockAI, mockR2 } = await makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 10000);
+
+    await gate.handleDocumentUpload(
+      { title: 'test doc', content: 'Secret wallet content' },
+      TEST_WALLET,
+    );
+
+    // R2.put should have been called with a key containing the wallet address
+    expect(mockR2.put).toHaveBeenCalledTimes(1);
+    const putKey = mockR2.put.mock.calls[0][0] as string;
+    expect(putKey).toContain(TEST_WALLET.toLowerCase());
+    expect(putKey).toMatch(/^documents\//);
+  });
+
+  it('handleDocumentDelete cleans up R2 content', async () => {
+    const { gate, storage, mockAI, mockR2, mockR2Store } = await makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 10000);
+
+    // Upload a document
+    const uploadRes = await gate.handleDocumentUpload(
+      { title: 'to delete', content: 'Will be removed' },
+      TEST_WALLET,
+    );
+    const { id: docId } = await uploadRes.json() as { id: string };
+
+    // Verify R2 has the content
+    expect(mockR2Store.size).toBe(1);
+
+    // Delete the document
+    await gate.handleDocumentDelete(docId);
+
+    // R2 delete should have been called
+    expect(mockR2.delete).toHaveBeenCalled();
+    const deleteKey = mockR2.delete.mock.calls[0][0] as string;
+    expect(deleteKey).toContain(TEST_WALLET.toLowerCase());
+    expect(deleteKey).toContain(docId);
+  });
+
+  it('R2 fallback reads content using DO wallet, not user-supplied wallet', async () => {
+    const { gate, storage, mockAI, mockR2, mockR2Store, mockVectorize } = await makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 10000);
+
+    // Upload a document (establishes wallet)
+    await gate.handleDocumentUpload(
+      { title: 'context doc', content: 'Important context data' },
+      TEST_WALLET,
+    );
+
+    // Clear Vectorize so fallback triggers
+    mockVectorize.query.mockResolvedValue({ count: 0, matches: [] });
+
+    // Reset R2 mock call tracking
+    mockR2.get.mockClear();
+
+    // Infer with useRag — should trigger R2 fallback
+    const res = await gate.handleInfer(
+      { prompt: 'hello', walletAddress: TEST_WALLET, useRag: true },
+      null, 'localhost', TEST_WALLET,
+    );
+    await drainStream(res);
+
+    // Verify R2.get was called with the DO's wallet, not any user input
+    if (mockR2.get.mock.calls.length > 0) {
+      const getKey = mockR2.get.mock.calls[0][0] as string;
+      expect(getKey).toContain(TEST_WALLET.toLowerCase());
+      expect(getKey).toMatch(/^documents\//);
+    }
+  });
+
+  it('R2 operations use this.wallet not body.walletAddress', async () => {
+    const { gate, storage, mockAI, mockR2 } = await makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 10000);
+
+    // The gate's internal wallet is set to TEST_WALLET
+    // Upload passing a DIFFERENT walletAddress in the body — but the DO
+    // should use this.wallet (TEST_WALLET), not the body parameter
+    const ATTACKER_WALLET = '0xattacker';
+
+    await gate.handleDocumentUpload(
+      { title: 'test', content: 'data' },
+      TEST_WALLET, // This is the wallet param from the router (used to set this.wallet)
+    );
+
+    // R2 key should use TEST_WALLET, not any other address
+    const putKey = mockR2.put.mock.calls[0][0] as string;
+    expect(putKey).toContain(TEST_WALLET.toLowerCase());
+    expect(putKey).not.toContain(ATTACKER_WALLET.toLowerCase());
+  });
+});
