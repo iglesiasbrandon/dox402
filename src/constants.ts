@@ -2,8 +2,18 @@
 export const PRICE_USDC_UNITS      = '1000';                         // $0.001 USDC per payment
 export const PAYMENT_MICRO_USDC    = 1000;                           // tokens added per payment (1 token = 1 µUSDC = $0.000001)
 export const MICRO_USDC_PER_NEURON = 0.011;                          // $0.011/1M neurons → 0.011 µUSDC/neuron
-export const OVERHEAD_MICRO_USDC   = 6;                               // estimated DO + Workers overhead per request (µUSDC)
 export const TARGET_MARGIN         = 0.15;                             // target gross margin (15%)
+
+// ── Infrastructure overhead per request (µUSDC) ────────────────────────────────
+// This fixed overhead absorbs platform costs that are too small to meter individually:
+//   • Durable Object + Workers compute    ~5–6 µUSDC/req
+//   • R2 Class A ops (PUT on upload)       $4.50/1M = 0.0045 µUSDC/op  (negligible)
+//   • R2 Class B ops (GET on inference)    $0.36/1M = 0.00036 µUSDC/op (negligible)
+//   • R2 storage (100KB doc × 30 days)     $0.015/GB-mo ≈ 0.0000015 µUSDC/doc-mo
+//   • R2 DELETE ops                        Free
+// At current scale, R2 costs are <0.01 µUSDC/req — well within the overhead budget.
+// Revisit if avg document size or request volume grows significantly.
+export const OVERHEAD_MICRO_USDC   = 6;
 export const PROOF_MAX_AGE_SECS    = 300;                            // 5-minute proof validity window
 export const MAX_HISTORY_MESSAGES  = 20;                             // max stored messages (10 exchanges)
 export const MAX_TOKENS_LIMIT     = 2048;                            // server-side cap on maxTokens per request
@@ -52,6 +62,11 @@ export const ALLOWED_MODELS: Record<string, string> = {
 };
 
 // ── RAG (Retrieval-Augmented Generation) configuration ────────────────────────
+// Document content stored in R2 (RAG_STORAGE bucket). R2 cost analysis:
+//   Storage: $0.015/GB-mo (10GB free tier). At 50 docs × 100KB avg = 5MB/wallet → free tier.
+//   PUT (upload): $4.50/1M (1M free). One per document upload.
+//   GET (inference): $0.36/1M (10M free). One per RAG-augmented inference.
+//   DELETE: Free. One per document deletion.
 export const RAG_CHUNK_CHAR_SIZE      = 1600;       // ~400 tokens at 4 chars/token
 export const RAG_CHUNK_CHAR_OVERLAP   = 200;        // ~50 tokens overlap between chunks
 export const RAG_TOP_K                = 5;           // top chunks retrieved per query

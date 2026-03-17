@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; worker-src blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
   <title>dox402 · pay-per-use AI</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 36 36' fill='none'%3E%3Crect width='36' height='36' rx='8' fill='%23181818'/%3E%3Cpolygon points='18,8 27,13 18,18 9,13' fill='%232a1a08'/%3E%3Cpolygon points='27,13 27,23 18,28 18,18' fill='%23231508'/%3E%3Cpolygon points='9,13 18,18 18,28 9,23' fill='%231a1008'/%3E%3Cg stroke='%23ff9540' stroke-width='1.5' stroke-linecap='round'%3E%3Cline x1='18' y1='8' x2='27' y2='13'/%3E%3Cline x1='27' y1='13' x2='27' y2='23'/%3E%3Cline x1='27' y1='23' x2='18' y2='28'/%3E%3Cline x1='18' y1='28' x2='9' y2='23'/%3E%3Cline x1='9' y1='23' x2='9' y2='13'/%3E%3Cline x1='9' y1='13' x2='18' y2='8'/%3E%3C/g%3E%3Cg stroke='%23f6821f' stroke-width='1' stroke-linecap='round'%3E%3Cline x1='18' y1='18' x2='27' y2='13'/%3E%3Cline x1='18' y1='18' x2='9' y2='13'/%3E%3Cline x1='18' y1='18' x2='18' y2='28'/%3E%3C/g%3E%3Cg fill='%23ffb870'%3E%3Ccircle cx='18' cy='8' r='1.6'/%3E%3Ccircle cx='27' cy='13' r='1.2'/%3E%3Ccircle cx='27' cy='23' r='1.2'/%3E%3Ccircle cx='18' cy='28' r='1.6'/%3E%3Ccircle cx='9' cy='23' r='1.2'/%3E%3Ccircle cx='9' cy='13' r='1.2'/%3E%3Ccircle cx='18' cy='18' r='1.1'/%3E%3C/g%3E%3C/svg%3E" />
   <style>
@@ -875,9 +875,9 @@ POST   /documents/reindex re-upsert all document vectors
           <hr class="divider" />
           <div class="doc-upload-form">
             <div class="doc-drop-zone" id="docDropZone">
-              <input type="file" id="docFileInput" accept=".txt,.md,.csv,.json,.html" />
+              <input type="file" id="docFileInput" accept=".txt,.md,.csv,.json,.html,.pdf,.docx" />
               <div style="margin-bottom:4px">Drop a file here or <span style="color:var(--accent);text-decoration:underline">browse</span></div>
-              <div style="font-size:11px;color:var(--border)">.txt, .md, .csv, .json, .html</div>
+              <div style="font-size:11px;color:var(--border)">.txt, .md, .csv, .json, .html, .pdf, .docx</div>
             </div>
             <span id="docUploadStatus"></span>
           </div>
@@ -905,6 +905,10 @@ POST   /documents/reindex re-upsert all document vectors
 </div><!-- end split -->
 
 <!-- ── Top-up modal overlay ─────────────────────────────────────────────── -->
+
+<!-- PDF & DOCX client-side parsers (loaded before main script) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js" crossorigin></script>
 
 <script>
   // ── Constants ──────────────────────────────────────────────────────────────
@@ -1843,7 +1847,7 @@ POST   /documents/reindex re-upsert all document vectors
     if (!file) return;
 
     // Validate file extension
-    const allowed = ['.txt', '.md', '.csv', '.json', '.html'];
+    const allowed = ['.txt', '.md', '.csv', '.json', '.html', '.pdf', '.docx'];
     const ext = '.' + file.name.split('.').pop().toLowerCase();
     if (!allowed.includes(ext)) {
       statusEl.textContent = `Unsupported file type: ${ext}`;
@@ -1855,31 +1859,62 @@ POST   /documents/reindex re-upsert all document vectors
     // Derive title from filename (strip extension)
     const title = file.name.replace(/\.[^/.]+$/, '');
 
-    // Read the file
+    // Read and extract text content based on file type
     let content;
     try {
-      content = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsText(file);
-      });
+      if (ext === '.pdf') {
+        // PDF: extract text via pdf.js
+        if (!window.pdfjsLib) throw new Error('PDF parser not loaded — please refresh and try again');
+        statusEl.textContent = 'Extracting text from PDF…';
+        statusEl.style.color = 'var(--muted)';
+        statusEl.style.display = 'block';
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.worker.min.js';
+        const arrayBuf = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+        const pages = [];
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const tc = await page.getTextContent();
+          pages.push(tc.items.map(item => item.str).join(' '));
+        }
+        content = pages.join('\n\n');
+      } else if (ext === '.docx') {
+        // DOCX: extract text via mammoth.js
+        if (!window.mammoth) throw new Error('DOCX parser not loaded — please refresh and try again');
+        statusEl.textContent = 'Extracting text from DOCX…';
+        statusEl.style.color = 'var(--muted)';
+        statusEl.style.display = 'block';
+        const arrayBuf = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer: arrayBuf });
+        content = result.value;
+      } else {
+        // Plain text formats: read as text
+        content = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsText(file);
+        });
+      }
     } catch (e) {
-      statusEl.textContent = 'Failed to read file';
+      statusEl.textContent = e.message || 'Failed to read file';
       statusEl.style.color = 'var(--red)';
       statusEl.style.display = 'block';
       return;
     }
 
-    if (!content) {
-      statusEl.textContent = 'File appears to be empty';
+    if (!content || !content.trim()) {
+      statusEl.textContent = ext === '.pdf'
+        ? 'No extractable text found — this PDF may be scanned/image-only'
+        : 'File appears to be empty';
       statusEl.style.color = 'var(--red)';
       statusEl.style.display = 'block';
       return;
     }
 
     dropZone.classList.add('uploading');
-    statusEl.textContent = 'Uploading & embedding…';
+    statusEl.textContent = 'Uploading & embedding…' + (content.length > 50000 ? ' (large file, this may take a moment)' : '');
     statusEl.style.color = 'var(--muted)';
     statusEl.style.display = 'block';
 

@@ -17,6 +17,15 @@ export function parseSSE(sse: string): { text: string; usage: { prompt_tokens: n
   return { text, usage };
 }
 
+// ── Cost of Goods Sold (COGS) breakdown ────────────────────────────────────────
+// Per-request COGS has three components:
+//   1. Inference neurons  — model-specific neuron rates × token count × $0.011/1M neurons
+//   2. RAG embedding      — computed separately in rag.ts via computeEmbeddingCost()
+//   3. Infrastructure     — fixed OVERHEAD_MICRO_USDC (covers DO, Workers, R2 ops & storage)
+//
+// Final price = ceil(COGS / (1 − TARGET_MARGIN)) — currently 15% gross margin.
+// R2 costs (storage + ops) are absorbed by the infrastructure overhead; they're <0.01 µUSDC/req.
+//
 // Compute request cost in µUSDC from actual token usage.
 // Workers AI often emits {prompt_tokens:0, completion_tokens:0} in production SSE,
 // so when both are zero we fall back to character-count estimation (chars ÷ 4 ≈ tokens).
