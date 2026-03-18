@@ -30,6 +30,22 @@ export interface PaymentProof {
   signature: string; // EIP-191 personal_sign over canonical proof message (verified via ecrecover)
 }
 
+const WALLET_RE = /^0x[0-9a-fA-F]{40}$/;
+const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
+
+/** Runtime type guard for PaymentProof — validates all required fields and formats. */
+export function isValidPaymentProof(obj: unknown): obj is PaymentProof {
+  if (typeof obj !== 'object' || obj === null) return false;
+  const o = obj as Record<string, unknown>;
+  if (typeof o.txHash !== 'string' || !TX_HASH_RE.test(o.txHash)) return false;
+  if (typeof o.from !== 'string' || !WALLET_RE.test(o.from)) return false;
+  if (typeof o.amount !== 'string') return false;
+  try { BigInt(o.amount); } catch { return false; }
+  if (typeof o.timestamp !== 'number' || !Number.isFinite(o.timestamp)) return false;
+  if (typeof o.signature !== 'string') return false;
+  return true;
+}
+
 // Deposit-only request body (top-up without inference)
 export interface DepositRequest {
   walletAddress: string; // 0x-prefixed EVM address — validated against session at router; DO derives wallet from its ID

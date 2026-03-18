@@ -8,7 +8,7 @@ import {
   STREAM_HEARTBEAT_MS, STREAM_MAX_DURATION_MS,
 } from './constants';
 import { parseSSE, computeCostMicroUSDC, validateInferenceResult } from './billing';
-import { AdminWalletStatus, ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce, WalletRegistryEntry } from './types';
+import { AdminWalletStatus, ConversationMessage, DepositRequest, Env, InferRequest, PaymentProof, PendingVerification, StoredNonce, WalletRegistryEntry, isValidPaymentProof } from './types';
 import { MIGRATIONS } from './migrations';
 import { upsertDocument, queryRagContext, deleteDocumentVectors, computeEmbeddingCost, storeDocumentContent, getDocumentContent, deleteDocumentContent } from './rag';
 import { RAG_MAX_DOCUMENT_SIZE, RAG_MAX_DOCUMENTS, NEURON_RATES } from './constants';
@@ -231,6 +231,10 @@ export class InferenceGate extends DurableObject<Env> {
     hostname: string,
     wallet: string,
   ): Promise<Response> {
+    // Defense-in-depth: verify wallet matches DO identity (router already validates, but DO must self-check)
+    if (this.wallet && wallet.toLowerCase() !== this.wallet.toLowerCase()) {
+      return Response.json({ error: 'Wallet does not match DO identity' }, { status: 403 });
+    }
     // Persist wallet only on first-ever request (subsequent activations load via constructor)
     if (!this.wallet) {
       this.wallet = wallet;
@@ -342,10 +346,14 @@ export class InferenceGate extends DurableObject<Env> {
       return this.inferAndLog(body, balance, messages, false, ragCost);
     }
 
-    // Step 4: Parse the proof from the payment signature
+    // Step 4: Parse and validate the proof from the payment signature
     let proof: PaymentProof;
     try {
-      proof = JSON.parse(atob(paymentSignature)) as PaymentProof;
+      const parsed = JSON.parse(atob(paymentSignature));
+      if (!isValidPaymentProof(parsed)) {
+        return Response.json({ error: 'Invalid payment proof structure' }, { status: 400 });
+      }
+      proof = parsed;
     } catch {
       return new Response(JSON.stringify({ error: 'Malformed PAYMENT-SIGNATURE header' }), {
         status: 402,
@@ -621,6 +629,9 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   async handleDeposit(body: DepositRequest, hostname: string, wallet: string): Promise<Response> {
+    if (this.wallet && wallet.toLowerCase() !== this.wallet.toLowerCase()) {
+      return Response.json({ error: 'Wallet does not match DO identity' }, { status: 403 });
+    }
     // Persist wallet only on first-ever request (subsequent activations load via constructor)
     if (!this.wallet) {
       this.wallet = wallet;
@@ -633,7 +644,11 @@ export class InferenceGate extends DurableObject<Env> {
 
     let proof: PaymentProof;
     try {
-      proof = JSON.parse(atob(body.proof)) as PaymentProof;
+      const parsed = JSON.parse(atob(body.proof));
+      if (!isValidPaymentProof(parsed)) {
+        return Response.json({ error: 'Invalid payment proof structure' }, { status: 400 });
+      }
+      proof = parsed;
     } catch {
       return Response.json({ error: 'Malformed proof — expected base64-encoded JSON' }, { status: 400 });
     }
@@ -785,6 +800,9 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   async handleDocumentUpload(body: DocumentUploadRequest, wallet: string): Promise<Response> {
+    if (this.wallet && wallet.toLowerCase() !== this.wallet.toLowerCase()) {
+      return Response.json({ error: 'Wallet does not match DO identity' }, { status: 403 });
+    }
     // Persist wallet on first request (same pattern as handleInfer lines 193-198)
     if (!this.wallet) {
       this.wallet = wallet;
@@ -945,20 +963,13 @@ export class InferenceGate extends DurableObject<Env> {
     const { generateEmbeddings } = await import('./rag');
     const [queryVector] = await generateEmbeddings(this.env, [prompt]);
 
-    // Query WITH wallet filter
+    // Query with wallet filter only — never query without filter (cross-wallet data leak)
     const filtered = await this.env.VECTORIZE.query(queryVector, {
       topK: 5,
       returnMetadata: 'all',
       filter: { wallet: { $eq: this.wallet } },
     });
 
-    // Query WITHOUT wallet filter
-    const unfiltered = await this.env.VECTORIZE.query(queryVector, {
-      topK: 5,
-      returnMetadata: 'all',
-    });
-
-    // Get stored documents from SQL
     const docs = this.sql.exec<{ id: string; title: string; char_count: number }>(
       'SELECT id, title, char_count FROM documents',
     ).toArray();
@@ -972,9 +983,6 @@ export class InferenceGate extends DurableObject<Env> {
       sqlDocuments: docs,
       sqlChunks: chunks.length,
       filteredMatches: filtered.matches.map(m => ({
-        id: m.id, score: m.score, metadata: m.metadata,
-      })),
-      unfilteredMatches: unfiltered.matches.map(m => ({
         id: m.id, score: m.score, metadata: m.metadata,
       })),
     });

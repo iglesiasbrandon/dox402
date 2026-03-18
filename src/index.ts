@@ -11,6 +11,12 @@ export { InferenceGate };
 
 const WALLET_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
+const ALLOWED_ORIGINS = new Set([
+  'https://inference-gate.iglesias-brandon.workers.dev',
+  'http://localhost:8787',
+  'http://127.0.0.1:8787',
+]);
+
 // ── CORS ──────────────────────────────────────────────────────────────────
 
 function corsHeaders(origin: string): Record<string, string> {
@@ -122,7 +128,10 @@ async function extractSiwxWallet(
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const origin = url.origin;
+    const requestOrigin = request.headers.get('Origin');
+    const origin = (requestOrigin && ALLOWED_ORIGINS.has(requestOrigin))
+      ? requestOrigin
+      : url.origin;
 
     // ── CORS preflight ────────────────────────────────────────────────────
     if (request.method === 'OPTIONS') {

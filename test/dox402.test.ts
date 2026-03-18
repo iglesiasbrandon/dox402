@@ -1616,16 +1616,14 @@ describe('prompt input validation (#66)', () => {
 });
 
 describe('deposit signature verification (#67)', () => {
-  it('rejects deposit with missing signature', async () => {
+  it('rejects deposit with invalid proof structure', async () => {
     const { gate, storage } = await makeTestDO();
 
-    // Proof without signature field
+    // Proof with invalid txHash format (not 64 hex chars)
     const proof = {
       from: TEST_WALLET,
-      to: '0x24AF3AcF8A91f5185e8CfB28087E2C54d49785B1',
       amount: '1000',
       txHash: '0xabc123',
-      chainId: 8453,
       timestamp: Math.floor(Date.now() / 1000),
     };
     const encodedProof = btoa(JSON.stringify(proof));
@@ -1634,8 +1632,133 @@ describe('deposit signature verification (#67)', () => {
       { proof: encodedProof, walletAddress: TEST_WALLET },
       'localhost', TEST_WALLET,
     );
-    expect(res.status).toBe(402);
+    expect(res.status).toBe(400);
     const body = await res.json() as Record<string, unknown>;
-    expect(body.error).toContain('missing proof signature');
+    expect(body.error).toContain('Invalid payment proof structure');
+  });
+});
+
+// ── HIGH security fix tests (#68, #69, #70, #71) ────────────────────────────
+
+describe('proof schema validation (#70)', () => {
+  it('rejects proof with missing txHash', async () => {
+    const { gate, storage } = await makeTestDO();
+    setBalance(storage, 0);
+    const proof = { from: '0x' + 'a'.repeat(40), amount: '1000', timestamp: 123, signature: '0xabc' };
+    const res = await gate.handleDeposit(
+      { walletAddress: TEST_WALLET, proof: btoa(JSON.stringify(proof)) },
+      'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects proof with non-hex from address', async () => {
+    const { gate, storage } = await makeTestDO();
+    setBalance(storage, 0);
+    const proof = { txHash: '0x' + 'a'.repeat(64), from: 'not-an-address', amount: '1000', timestamp: 123, signature: '0xabc' };
+    const res = await gate.handleDeposit(
+      { walletAddress: TEST_WALLET, proof: btoa(JSON.stringify(proof)) },
+      'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects proof with non-numeric amount', async () => {
+    const { gate, storage } = await makeTestDO();
+    setBalance(storage, 0);
+    const proof = { txHash: '0x' + 'a'.repeat(64), from: '0x' + 'a'.repeat(40), amount: 'not-a-number', timestamp: 123, signature: '0xabc' };
+    const res = await gate.handleDeposit(
+      { walletAddress: TEST_WALLET, proof: btoa(JSON.stringify(proof)) },
+      'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects proof with missing timestamp', async () => {
+    const { gate, storage } = await makeTestDO();
+    setBalance(storage, 0);
+    const proof = { txHash: '0x' + 'a'.repeat(64), from: '0x' + 'a'.repeat(40), amount: '1000', signature: '0xabc' };
+    const res = await gate.handleDeposit(
+      { walletAddress: TEST_WALLET, proof: btoa(JSON.stringify(proof)) },
+      'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('wallet ownership assertion (#68)', () => {
+  it('handleInfer rejects mismatched wallet after activation', async () => {
+    const { gate, storage } = await makeTestDO();
+    setBalance(storage, 10000);
+    // First call sets wallet to TEST_WALLET
+    const res1 = await callInfer(gate);
+    expect(res1.status).toBe(200);
+    // Drain the stream
+    const reader = res1.body!.getReader();
+    while (!(await reader.read()).done) {}
+
+    // Second call with different wallet
+    const res2 = await gate.handleInfer(
+      inferBody('test'), null, 'localhost', '0xattacker',
+    );
+    expect(res2.status).toBe(403);
+    const body = await res2.json() as Record<string, unknown>;
+    expect(body.error).toContain('Wallet does not match DO identity');
+  });
+
+  it('handleDeposit rejects mismatched wallet after activation', async () => {
+    const { gate, storage } = await makeTestDO();
+    setBalance(storage, 10000);
+    const res1 = await callInfer(gate);
+    const reader = res1.body!.getReader();
+    while (!(await reader.read()).done) {}
+
+    const res = await gate.handleDeposit(
+      { walletAddress: '0xattacker', proof: btoa('{}') },
+      'localhost', '0xattacker',
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('handleDocumentUpload rejects mismatched wallet after activation', async () => {
+    const { gate, storage } = await makeTestDO();
+    setBalance(storage, 10000);
+    const res1 = await callInfer(gate);
+    const reader = res1.body!.getReader();
+    while (!(await reader.read()).done) {}
+
+    const res = await gate.handleDocumentUpload(
+      { title: 'test', content: 'test content' },
+      '0xattacker',
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('Vectorize wallet filter regression (#71)', () => {
+  it('handleRagDebug does not make unfiltered Vectorize queries', async () => {
+    const { gate, storage, mockAI, mockVectorize } = await makeTestDO();
+    setBalance(storage, 10000);
+    // Activate wallet
+    const res1 = await callInfer(gate);
+    const reader = res1.body!.getReader();
+    while (!(await reader.read()).done) {}
+
+    // Setup AI mock for embeddings
+    mockAI.run.mockImplementation(async (model: string) => {
+      if (model === '@cf/baai/bge-base-en-v1.5') {
+        return { data: [new Array(768).fill(0.1)] };
+      }
+      return null;
+    });
+
+    mockVectorize.query.mockClear();
+    await gate.handleRagDebug('test query');
+
+    // Should be called exactly once (filtered only, no unfiltered)
+    expect(mockVectorize.query).toHaveBeenCalledTimes(1);
+    // Verify wallet filter is present
+    const callArgs = mockVectorize.query.mock.calls[0];
+    expect(callArgs[1].filter).toEqual({ wallet: { $eq: TEST_WALLET } });
   });
 });
