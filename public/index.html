@@ -1245,7 +1245,6 @@ POST   /documents/reindex re-upsert all document vectors
     if (!wallet || !isSessionValid()) { showErr('Connect your wallet and sign in first.'); return; }
     pendingPrompt = prompt;
     pendingModel  = document.getElementById('modelSelect').value;
-    document.getElementById('promptIn').value = '';
     hideErr();
     setBusy(true);
     await doInfer(prompt, null, pendingModel);
@@ -1426,6 +1425,7 @@ POST   /documents/reindex re-upsert all document vectors
       }
 
       // Append user message, create empty assistant bubble, stream into it
+      document.getElementById('promptIn').value = '';
       appendMessage('user', prompt);
       const assistantEl = appendMessage('assistant', '');
       const assistantContent = assistantEl.querySelector('.msg-content');
