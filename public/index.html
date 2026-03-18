@@ -450,28 +450,32 @@
     .files-section.visible { display: flex; }
 
     .doc-list-inline {
-      display: flex; flex-wrap: wrap; gap: 6px;
+      display: flex; flex-direction: column; gap: 0;
     }
-    .doc-chip {
-      display: inline-flex; align-items: center; gap: 6px;
-      background: var(--surface2); border: 1px solid var(--border); border-radius: 20px;
-      padding: 4px 10px 4px 12px; font-size: 11px; color: var(--text);
-      max-width: 220px;
+    .doc-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 10px; font-size: 12px; color: var(--text);
+      border-bottom: 1px solid var(--border);
     }
-    .doc-chip-name {
+    .doc-row:last-child { border-bottom: none; }
+    .doc-row-info {
+      display: flex; align-items: center; gap: 8px;
+      min-width: 0; flex: 1;
+    }
+    .doc-row-name {
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       font-weight: 500;
     }
-    .doc-chip-size {
+    .doc-row-meta {
       font-size: 10px; color: var(--muted); font-family: var(--mono);
       white-space: nowrap; flex-shrink: 0;
     }
-    .doc-chip-del {
+    .doc-row-del {
       background: none; border: none; color: var(--muted); font-size: 13px;
-      cursor: pointer; padding: 0 2px; transition: color .15s; flex-shrink: 0;
-      line-height: 1;
+      cursor: pointer; padding: 0 4px; transition: color .15s; flex-shrink: 0;
+      line-height: 1; margin-left: 8px;
     }
-    .doc-chip-del:hover { color: var(--red); }
+    .doc-row-del:hover { color: var(--red); }
 
     .doc-drop-zone-compact {
       border: 1px dashed var(--border); border-radius: var(--r);
@@ -1755,10 +1759,12 @@ POST   /documents/reindex re-upsert all document vectors
       return;
     }
     list.innerHTML = docs.map(d => `
-      <div class="doc-chip" title="${escapeHtml(d.title)} · ${d.chunkCount} chunks · ${(d.charCount / 1024).toFixed(1)} KB">
-        <span class="doc-chip-name">${escapeHtml(d.title)}</span>
-        <span class="doc-chip-size">${(d.charCount / 1024).toFixed(1)}KB</span>
-        <button class="doc-chip-del" onclick="deleteDocument('${d.id}')" title="Remove">✕</button>
+      <div class="doc-row">
+        <div class="doc-row-info">
+          <span class="doc-row-name">${escapeHtml(d.title)}</span>
+          <span class="doc-row-meta">${(d.charCount / 1024).toFixed(1)}KB · ${d.chunkCount} chunks</span>
+        </div>
+        <button class="doc-row-del" onclick="deleteDocument('${d.id}')" title="Remove">✕</button>
       </div>
     `).join('');
   }
