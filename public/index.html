@@ -1093,14 +1093,13 @@ POST   /documents/reindex re-upsert all document vectors
     document.getElementById('statusTxt').textContent = 'Conversation History';
     document.getElementById('dot').classList.remove('live');
     document.getElementById('respCard').style.display = 'none';
-    // Reset files panel to auth gate
-    document.getElementById('docAuthGate').style.display = 'block';
-    document.getElementById('docAuthContent').style.display = 'none';
+    // Reset prompt card: clear file list, prompt text, and RAG state
+    document.getElementById('docList').innerHTML = '';
+    document.getElementById('promptIn').value = '';
     documentCount = 0;
     totalDocChars = 0;
     documentNames = [];
     updateRagToggle();
-    document.getElementById('filesSection').classList.remove('visible');
   }
 
   function showConnected(addr) {
