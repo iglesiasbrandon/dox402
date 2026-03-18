@@ -151,7 +151,7 @@ describe('parseCookieToken', () => {
 });
 
 describe('TOKEN_EXPIRY_SECS', () => {
-  it('is 24 hours in seconds', () => {
-    expect(TOKEN_EXPIRY_SECS).toBe(86400);
+  it('is 4 hours in seconds', () => {
+    expect(TOKEN_EXPIRY_SECS).toBe(14400);
   });
 });

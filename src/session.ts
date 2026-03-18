@@ -1,7 +1,7 @@
 // Stateless JWT-like session tokens using Web Crypto HMAC-SHA256.
 // No external dependencies — uses crypto.subtle available natively in Cloudflare Workers.
 
-export const TOKEN_EXPIRY_SECS = 86400; // 24 hours
+export const TOKEN_EXPIRY_SECS = 14400; // 4 hours
 const COOKIE_NAME = 'ig_session';
 
 interface SessionPayload {

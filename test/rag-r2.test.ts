@@ -42,10 +42,10 @@ describe('r2DocKey — wallet namespace isolation', () => {
     // The key is still unique to whatever value was passed as wallet
   });
 
-  it('prevents path traversal via docId', () => {
-    const key = r2DocKey('0xWallet', '../../secret');
-    expect(key).toBe('documents/0xwallet/../../secret');
-    // Same principle — R2 keys are opaque
+  it('rejects docId with path traversal characters', () => {
+    expect(() => r2DocKey('0xWallet', '../../secret')).toThrow('Invalid document ID');
+    expect(() => r2DocKey('0xWallet', 'doc\x00id')).toThrow('Invalid document ID');
+    expect(() => r2DocKey('0xWallet', 'doc\\id')).toThrow('Invalid document ID');
   });
 });
 

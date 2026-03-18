@@ -11,6 +11,32 @@ export { InferenceGate };
 
 const WALLET_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
+// Admin brute-force protection: track failed attempts per IP
+const adminFailures = new Map<string, { count: number; resetAt: number }>();
+const ADMIN_MAX_FAILURES = 5;
+const ADMIN_WINDOW_MS = 60_000;
+
+function checkAdminRateLimit(request: Request): Response | null {
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const now = Date.now();
+  const entry = adminFailures.get(ip);
+  if (entry && now < entry.resetAt && entry.count >= ADMIN_MAX_FAILURES) {
+    return Response.json({ error: 'Too many failed attempts' }, { status: 429 });
+  }
+  return null;
+}
+
+function recordAdminFailure(request: Request): void {
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const now = Date.now();
+  const entry = adminFailures.get(ip);
+  if (!entry || now >= entry.resetAt) {
+    adminFailures.set(ip, { count: 1, resetAt: now + ADMIN_WINDOW_MS });
+  } else {
+    entry.count++;
+  }
+}
+
 const ALLOWED_ORIGINS = new Set([
   'https://inference-gate.iglesias-brandon.workers.dev',
   'http://localhost:8787',
@@ -34,6 +60,7 @@ function securityHeaders(): Record<string, string> {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
   };
 }
 
@@ -227,7 +254,9 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
     // GET /admin/wallets — paginated wallet list from KV registry
     if (url.pathname === '/admin/wallets' && request.method === 'GET') {
       if (!env.ADMIN_SECRET) return adminDisabled();
-      if (!isAdmin(request, env)) return adminUnauthorized();
+      const adminRateLimited = checkAdminRateLimit(request);
+      if (adminRateLimited) return adminRateLimited;
+      if (!isAdmin(request, env)) { recordAdminFailure(request); return adminUnauthorized(); }
 
       const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') ?? '100', 10) || 100, 1), 1000);
       const cursor = url.searchParams.get('cursor') ?? undefined;
@@ -248,7 +277,9 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
     // GET /admin/wallets/:wallet/status — detailed DO status for a specific wallet
     if (url.pathname.startsWith('/admin/wallets/') && url.pathname.endsWith('/status') && request.method === 'GET') {
       if (!env.ADMIN_SECRET) return adminDisabled();
-      if (!isAdmin(request, env)) return adminUnauthorized();
+      const adminRateLimited = checkAdminRateLimit(request);
+      if (adminRateLimited) return adminRateLimited;
+      if (!isAdmin(request, env)) { recordAdminFailure(request); return adminUnauthorized(); }
 
       // Extract wallet from /admin/wallets/0x.../status
       const parts = url.pathname.split('/');
@@ -262,7 +293,9 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
     // GET /admin/stats — aggregate statistics (total registered wallets)
     if (url.pathname === '/admin/stats' && request.method === 'GET') {
       if (!env.ADMIN_SECRET) return adminDisabled();
-      if (!isAdmin(request, env)) return adminUnauthorized();
+      const adminRateLimited = checkAdminRateLimit(request);
+      if (adminRateLimited) return adminRateLimited;
+      if (!isAdmin(request, env)) { recordAdminFailure(request); return adminUnauthorized(); }
 
       // Count all keys by iterating with cursor (KV has no native count API)
       let total = 0;
@@ -279,7 +312,9 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
     // GET /admin/stale — identify zero-balance inactive wallets
     if (url.pathname === '/admin/stale' && request.method === 'GET') {
       if (!env.ADMIN_SECRET) return adminDisabled();
-      if (!isAdmin(request, env)) return adminUnauthorized();
+      const adminRateLimited = checkAdminRateLimit(request);
+      if (adminRateLimited) return adminRateLimited;
+      if (!isAdmin(request, env)) { recordAdminFailure(request); return adminUnauthorized(); }
 
       const inactiveDays = Math.max(parseInt(url.searchParams.get('inactive_days') ?? '30', 10) || 30, 1);
       const maxBalance = Math.max(parseInt(url.searchParams.get('max_balance') ?? '0', 10) || 0, 0);

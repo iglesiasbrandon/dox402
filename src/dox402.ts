@@ -273,6 +273,7 @@ export class InferenceGate extends DurableObject<Env> {
     // RAG context injection (opt-in)
     let ragCost = 0;
     let ragChunkCount = 0;
+    let ragStatus: 'injected' | 'fallback' | 'failed' | 'off' = 'off';
     if (body.useRag) {
       let ragInjected = false;
       try {
@@ -285,6 +286,7 @@ export class InferenceGate extends DurableObject<Env> {
           ragCost = ragContext.queryCost;
           ragChunkCount = ragContext.chunkCount;
           ragInjected = true;
+          ragStatus = 'injected';
           console.log('[InferenceGate] RAG injected %d chunks (%d chars) via Vectorize for wallet %s',
             ragContext.chunkCount, ragContext.systemMessage.length, this.wallet);
         } else {
@@ -319,6 +321,7 @@ export class InferenceGate extends DurableObject<Env> {
               const systemMessage = preamble + '\n' + contextBody;
               messages.unshift({ role: 'system' as const, content: systemMessage });
               ragChunkCount = docs.length;
+              ragStatus = 'fallback';
               console.log('[InferenceGate] RAG fallback: injected %d docs (%d chars) from R2 for wallet %s',
                 docs.length, systemMessage.length, this.wallet);
             }
@@ -327,6 +330,7 @@ export class InferenceGate extends DurableObject<Env> {
           console.error('[InferenceGate] RAG R2 fallback failed:', err instanceof Error ? err.message : String(err));
         }
       }
+      if (ragStatus === 'off') ragStatus = 'failed'; // useRag was true but nothing was injected
     }
 
     // Validate total input against model's context window
@@ -336,14 +340,14 @@ export class InferenceGate extends DurableObject<Env> {
       const totalTokens = Math.ceil(totalChars / 4);
       if (totalTokens > modelRates.contextWindow) {
         return Response.json({
-          error: `Input too large for this model. Your input is ~${totalTokens.toLocaleString()} tokens but ${body.model || '@cf/meta/llama-3.1-8b-instruct'} supports ${modelRates.contextWindow.toLocaleString()} tokens. Try removing files, clearing history, or switching to a model with a larger context window.`,
+          error: 'Input too large for this model. Try removing files, clearing history, or switching to a model with a larger context window.',
         }, { status: 413 });
       }
     }
 
     // Step 3: No proof but has balance → run inference (cost deducted post-stream)
     if (!paymentSignature) {
-      return this.inferAndLog(body, balance, messages, false, ragCost);
+      return this.inferAndLog(body, balance, messages, false, ragCost, ragStatus);
     }
 
     // Step 4: Parse and validate the proof from the payment signature
@@ -438,21 +442,24 @@ export class InferenceGate extends DurableObject<Env> {
       throw err;
     }
 
-    // Ensure cleanup alarm fires after seen key retention period
-    await this.ensureAlarm(SEEN_TX_RETENTION_MS);
-
-    // Schedule alarm for async re-verification if provisional (shorter delay overrides cleanup alarm)
-    if (isProvisional) {
-      console.warn('[dox402] Grace mode activated for tx %s, wallet %s, amount %d µUSDC',
-        proof.txHash, this.walletAddress, creditAmount);
-      await this.ensureAlarm(GRACE_INITIAL_RETRY_MS);
+    // Schedule alarms (best-effort — failure logged but non-fatal; alarm will
+    // be rescheduled on the next request or alarm() invocation)
+    try {
+      await this.ensureAlarm(SEEN_TX_RETENTION_MS);
+      if (isProvisional) {
+        console.warn('[dox402] Grace mode activated for tx %s, wallet %s, amount %d µUSDC',
+          proof.txHash, this.walletAddress, creditAmount);
+        await this.ensureAlarm(GRACE_INITIAL_RETRY_MS);
+      }
+    } catch (err) {
+      console.error('[dox402] Failed to schedule alarm:', err instanceof Error ? err.message : String(err));
     }
 
     // Step 9: Run inference (balance deducted async after stream)
-    return this.inferAndLog(body, newBalance, messages, isProvisional, ragCost);
+    return this.inferAndLog(body, newBalance, messages, isProvisional, ragCost, ragStatus);
   }
 
-  private async inferAndLog(body: InferRequest, balance: number, messages: ConversationMessage[], provisional = false, ragCostMicroUSDC = 0): Promise<Response> {
+  private async inferAndLog(body: InferRequest, balance: number, messages: ConversationMessage[], provisional = false, ragCostMicroUSDC = 0, ragStatus: 'injected' | 'fallback' | 'failed' | 'off' = 'off'): Promise<Response> {
     // Run Workers AI inference (falls back to mock in local dev when AI binding is unavailable)
     let stream: ReadableStream;
     try {
@@ -624,6 +631,7 @@ export class InferenceGate extends DurableObject<Env> {
       headers: {
         'Content-Type': 'text/event-stream',
         ...(provisional ? { 'X-Payment-Status': 'provisional' } : {}),
+        ...(ragStatus !== 'off' ? { 'X-RAG-Status': ragStatus } : {}),
       },
     });
   }
@@ -721,14 +729,16 @@ export class InferenceGate extends DurableObject<Env> {
       throw err;
     }
 
-    // Ensure cleanup alarm fires after seen key retention period
-    await this.ensureAlarm(SEEN_TX_RETENTION_MS);
-
-    // Schedule alarm for async re-verification if provisional (shorter delay overrides cleanup alarm)
-    if (isProvisional) {
-      console.warn('[dox402] Grace mode activated for tx %s, wallet %s, amount %d µUSDC',
-        proof.txHash, this.walletAddress, creditAmount);
-      await this.ensureAlarm(GRACE_INITIAL_RETRY_MS);
+    // Schedule alarms (best-effort — failure logged but non-fatal)
+    try {
+      await this.ensureAlarm(SEEN_TX_RETENTION_MS);
+      if (isProvisional) {
+        console.warn('[dox402] Grace mode activated for tx %s, wallet %s, amount %d µUSDC',
+          proof.txHash, this.walletAddress, creditAmount);
+        await this.ensureAlarm(GRACE_INITIAL_RETRY_MS);
+      }
+    } catch (err) {
+      console.error('[dox402] Failed to schedule alarm:', err instanceof Error ? err.message : String(err));
     }
 
     // Analytics: deposit confirmed
@@ -1145,8 +1155,15 @@ export class InferenceGate extends DurableObject<Env> {
   }
 
   /** Clear provisional balance tracking for a resolved entry.
-   *  If `reverseCredit` is true, also deducts the amount from the wallet balance. */
+   *  If `reverseCredit` is true, also deducts the amount from the wallet balance.
+   *  Idempotent: skips if provisional_balance is already 0 (prevents double-deduction). */
   private clearProvisionalCredit(amount: number, reverseCredit: boolean): void {
+    // Check current provisional balance to prevent double-deduction if alarm fires twice
+    const current = this.requireRow(this.sql.exec<{ provisional_balance: number }>(
+      'SELECT provisional_balance FROM wallet_state WHERE id = 1',
+    ), 'wallet_state row missing');
+    if (current.provisional_balance <= 0) return; // already cleared — skip
+
     this.sql.exec(
       'UPDATE wallet_state SET provisional_balance = MAX(0, provisional_balance - ?) WHERE id = 1',
       amount,
@@ -1304,22 +1321,25 @@ export class InferenceGate extends DurableObject<Env> {
       return Response.json({ error: 'Missing nonce' }, { status: 400 });
     }
 
-    const row = this.sql.exec<{ created_at: number }>(
-      'SELECT created_at FROM nonces WHERE nonce = ?', nonce,
-    ).toArray()[0];
+    // Atomic delete-and-check: prevents race condition where two concurrent
+    // requests could both verify the same nonce (TOCTOU).
+    let valid = false;
+    this.ctx.storage.transactionSync(() => {
+      const row = this.sql.exec<{ created_at: number }>(
+        'SELECT created_at FROM nonces WHERE nonce = ?', nonce,
+      ).toArray()[0];
+      if (!row) return;
+      if (Date.now() - row.created_at > InferenceGate.NONCE_EXPIRY_MS) {
+        this.sql.exec('DELETE FROM nonces WHERE nonce = ?', nonce);
+        return;
+      }
+      this.sql.exec('DELETE FROM nonces WHERE nonce = ?', nonce);
+      valid = true;
+    });
 
-    if (!row) {
+    if (!valid) {
       return Response.json({ error: 'Invalid or expired nonce' }, { status: 401 });
     }
-
-    // Check 5-minute expiry
-    if (Date.now() - row.created_at > InferenceGate.NONCE_EXPIRY_MS) {
-      this.sql.exec('DELETE FROM nonces WHERE nonce = ?', nonce);
-      return Response.json({ error: 'Nonce expired' }, { status: 401 });
-    }
-
-    // One-time use — remove after verification
-    this.sql.exec('DELETE FROM nonces WHERE nonce = ?', nonce);
     return Response.json({ valid: true });
   }
 }

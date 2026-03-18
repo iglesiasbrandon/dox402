@@ -24,6 +24,7 @@ export interface TextChunk {
 
 /** Build the R2 key for a document's content: `documents/{wallet}/{docId}` */
 export function r2DocKey(wallet: string, docId: string): string {
+  if (/[\x00/\\]/.test(docId)) throw new Error('Invalid document ID');
   return `documents/${wallet.toLowerCase()}/${docId}`;
 }
 
@@ -240,7 +241,11 @@ export async function upsertDocument(
   // Upsert in batches of 1000
   for (let i = 0; i < vectors.length; i += VECTORIZE_UPSERT_BATCH) {
     const batch = vectors.slice(i, i + VECTORIZE_UPSERT_BATCH);
-    await env.VECTORIZE.upsert(batch);
+    try {
+      await env.VECTORIZE.upsert(batch);
+    } catch (err) {
+      throw new Error(`Vectorize upsert failed for batch ${Math.floor(i / VECTORIZE_UPSERT_BATCH)}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   const embeddingCost = computeEmbeddingCost(text.length);
@@ -295,10 +300,11 @@ export async function queryRagContext(
   const docChunks = new Map<string, string[]>();
   for (const m of relevant) {
     const meta = m.metadata as Record<string, unknown>;
-    const text = meta?.text as string;
-    const docId = (meta?.documentId as string) || 'unknown';
+    if (typeof meta?.text !== 'string' || typeof meta?.documentId !== 'string') continue;
+    const text = meta.text;
+    const docId = meta.documentId;
     if (validDocIds && !validDocIds.has(docId)) continue;
-    if (typeof text === 'string' && text.length > 0) {
+    if (text.length > 0) {
       if (!docChunks.has(docId)) docChunks.set(docId, []);
       docChunks.get(docId)!.push(text);
     }
