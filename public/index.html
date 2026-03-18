@@ -1840,7 +1840,11 @@ POST   /documents/reindex re-upsert all document vectors
         pdfjsLib.GlobalWorkerOptions.workerSrc =
           'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         const arrayBuf = await file.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+        const pdf = await pdfjsLib.getDocument({
+          data: arrayBuf,
+          cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
+          cMapPacked: true,
+        }).promise;
         const pages = [];
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
@@ -1848,6 +1852,16 @@ POST   /documents/reindex re-upsert all document vectors
           pages.push(tc.items.map(item => item.str).join(' '));
         }
         content = pages.join('\n\n');
+
+        // Quality check: if most characters are non-ASCII or control chars, the PDF
+        // likely uses embedded fonts with custom encodings that pdf.js can't decode.
+        const printable = content.replace(/[^\x20-\x7E\n\r\t]/g, '').length;
+        if (content.length > 0 && printable / content.length < 0.5) {
+          throw new Error(
+            'Could not extract readable text from this PDF. It may use scanned images or custom font encodings. ' +
+            'Try converting it to a text-based PDF first, or copy-paste the text into a .txt file.'
+          );
+        }
       } else if (ext === '.docx') {
         // DOCX: extract text via mammoth.js
         if (!window.mammoth) throw new Error('DOCX parser not loaded — please refresh and try again');
