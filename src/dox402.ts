@@ -229,7 +229,10 @@ export class InferenceGate extends DurableObject<Env> {
     // Step 1: Load current µUSDC balance
     const walletRow = this.sql.exec<{ balance: number }>(
       'SELECT balance FROM wallet_state WHERE id = 1',
-    ).toArray()[0]!;
+    ).toArray()[0];
+    if (!walletRow) {
+      throw new Error('wallet_state not initialized — database corruption or migration failure');
+    }
     const balance = walletRow.balance;
 
     // Step 2: No proof and no balance → return 402
@@ -380,7 +383,10 @@ export class InferenceGate extends DurableObject<Env> {
         // Read back the new balance for use after the transaction
         const row = this.sql.exec<{ balance: number }>(
           'SELECT balance FROM wallet_state WHERE id = 1',
-        ).toArray()[0]!;
+        ).toArray()[0];
+        if (!row) {
+          throw new Error('wallet_state not found after update — database corruption');
+        }
         newBalance = row.balance;
 
         // Grace mode: store pending entry for async re-verification
@@ -661,7 +667,10 @@ export class InferenceGate extends DurableObject<Env> {
 
         const row = this.sql.exec<{ balance: number }>(
           'SELECT balance FROM wallet_state WHERE id = 1',
-        ).toArray()[0]!;
+        ).toArray()[0];
+        if (!row) {
+          throw new Error('wallet_state not found after deposit update — database corruption');
+        }
         newBalance = row.balance;
 
         // Grace mode: store pending entry for async re-verification
@@ -722,7 +731,10 @@ export class InferenceGate extends DurableObject<Env> {
       provisional_balance: number;
     }>(`SELECT balance, total_deposited, total_spent, total_requests,
         total_failed_requests, provisional_balance
-        FROM wallet_state WHERE id = 1`).toArray()[0]!;
+        FROM wallet_state WHERE id = 1`).toArray()[0];
+    if (!row) {
+      throw new Error('wallet_state not initialized — database corruption or missing migration');
+    }
 
     return Response.json({
       tokens:              row.balance,
@@ -1007,23 +1019,34 @@ export class InferenceGate extends DurableObject<Env> {
       last_used_at: number | null;
     }>(`SELECT wallet_address, balance, total_deposited, total_spent,
         total_requests, total_failed_requests, provisional_balance, last_used_at
-        FROM wallet_state WHERE id = 1`).toArray()[0]!;
+        FROM wallet_state WHERE id = 1`).toArray()[0];
+    if (!row) {
+      throw new Error('wallet_state not initialized — database corruption or missing migration');
+    }
 
-    const historyCount = this.sql.exec<{ cnt: number }>(
+    const historyCountRow = this.sql.exec<{ cnt: number }>(
       'SELECT COUNT(*) as cnt FROM history',
-    ).toArray()[0]!.cnt;
+    ).toArray()[0];
+    if (!historyCountRow) throw new Error('COUNT query failed — database corruption');
+    const historyCount = historyCountRow.cnt;
 
-    const pendingCount = this.sql.exec<{ cnt: number }>(
+    const pendingCountRow = this.sql.exec<{ cnt: number }>(
       `SELECT COUNT(*) as cnt FROM pending_verifications WHERE status = 'pending'`,
-    ).toArray()[0]!.cnt;
+    ).toArray()[0];
+    if (!pendingCountRow) throw new Error('COUNT query failed — database corruption');
+    const pendingCount = pendingCountRow.cnt;
 
-    const nonceCount = this.sql.exec<{ cnt: number }>(
+    const nonceCountRow = this.sql.exec<{ cnt: number }>(
       'SELECT COUNT(*) as cnt FROM nonces',
-    ).toArray()[0]!.cnt;
+    ).toArray()[0];
+    if (!nonceCountRow) throw new Error('COUNT query failed — database corruption');
+    const nonceCount = nonceCountRow.cnt;
 
-    const seenTxCount = this.sql.exec<{ cnt: number }>(
+    const seenTxCountRow = this.sql.exec<{ cnt: number }>(
       'SELECT COUNT(*) as cnt FROM seen_transactions',
-    ).toArray()[0]!.cnt;
+    ).toArray()[0];
+    if (!seenTxCountRow) throw new Error('COUNT query failed — database corruption');
+    const seenTxCount = seenTxCountRow.cnt;
 
     const status: AdminWalletStatus = {
       walletAddress:      row.wallet_address,
@@ -1060,12 +1083,18 @@ export class InferenceGate extends DurableObject<Env> {
   private canActivateGraceMode(amount: number): boolean {
     const row = this.sql.exec<{ provisional_balance: number }>(
       'SELECT provisional_balance FROM wallet_state WHERE id = 1',
-    ).toArray()[0]!;
+    ).toArray()[0];
+    if (!row) {
+      throw new Error('wallet_state not found in grace mode check — database corruption');
+    }
     if (row.provisional_balance + amount > GRACE_MAX_PROVISIONAL_MICRO_USDC) return false;
 
     const countRow = this.sql.exec<{ cnt: number }>(
       `SELECT COUNT(*) as cnt FROM pending_verifications WHERE status = 'pending'`,
-    ).toArray()[0]!;
+    ).toArray()[0];
+    if (!countRow) {
+      throw new Error('COUNT query failed in grace mode check — database corruption');
+    }
     if (countRow.cnt >= GRACE_MAX_PENDING) return false;
 
     return true;
@@ -1100,7 +1129,10 @@ export class InferenceGate extends DurableObject<Env> {
     // Count remaining seen entries
     const row = this.sql.exec<{ cnt: number }>(
       'SELECT COUNT(*) as cnt FROM seen_transactions',
-    ).toArray()[0]!;
+    ).toArray()[0];
+    if (!row) {
+      throw new Error('COUNT query failed in cleanup — database corruption');
+    }
 
     if (row.cnt === 0) {
       // Also clean up old rate limit windows while we're at it
@@ -1125,7 +1157,10 @@ export class InferenceGate extends DurableObject<Env> {
       );
       const row = this.sql.exec<{ balance: number }>(
         'SELECT balance FROM wallet_state WHERE id = 1',
-      ).toArray()[0]!;
+      ).toArray()[0];
+      if (!row) {
+        throw new Error('wallet_state not found after credit reversal — database corruption');
+      }
       console.warn('[dox402] Reversed %d µUSDC from wallet %s (new balance: %d)',
         amount, this.walletAddress, row.balance);
     }
