@@ -17,6 +17,7 @@ export const OVERHEAD_MICRO_USDC   = 6;
 export const PROOF_MAX_AGE_SECS    = 300;                            // 5-minute proof validity window
 export const MAX_HISTORY_MESSAGES  = 20;                             // max stored messages (10 exchanges)
 export const MAX_TOKENS_LIMIT     = 2048;                            // server-side cap on maxTokens per request
+export const MAX_PROMPT_LENGTH    = 50_000;                           // max prompt characters (~12,500 tokens)
 export const RATE_LIMIT_PER_MINUTE = 60;                              // max requests per wallet per 60-second window
 export const NETWORK               = 'base-mainnet';
 export const USDC_CONTRACT         = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; // Base Mainnet USDC

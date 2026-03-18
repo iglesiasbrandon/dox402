@@ -69,7 +69,7 @@ export async function verifyProof(
   proof: PaymentProof,
   walletAddress: string,
   env: Env,
-  opts?: { skipSignature?: boolean; hostname?: string },
+  opts?: { hostname?: string },
 ): Promise<VerifyProofResult> {
 
   // ── Tier 1: structural checks (fast, no I/O) ──────────────────────────────
@@ -95,20 +95,16 @@ export async function verifyProof(
   }
 
   // EIP-191 signature verification — proves the wallet owner constructed this proof.
-  // Skipped for authenticated deposits where Bearer token already establishes identity
-  // and on-chain receipt.from confirms the sender.
-  if (!opts?.skipSignature) {
-    if (!proof.signature || proof.signature === '0x')
-      return { valid: false, reason: 'missing proof signature' };
+  if (!proof.signature || proof.signature === '0x')
+    return { valid: false, reason: 'missing proof signature' };
 
-    try {
-      const proofMessage = buildProofMessage(proof);
-      const recovered = recoverAddress(proofMessage, proof.signature);
-      if (recovered.toLowerCase() !== proof.from.toLowerCase())
-        return { valid: false, reason: 'proof signature does not match proof.from' };
-    } catch {
-      return { valid: false, reason: 'invalid proof signature' };
-    }
+  try {
+    const proofMessage = buildProofMessage(proof);
+    const recovered = recoverAddress(proofMessage, proof.signature);
+    if (recovered.toLowerCase() !== proof.from.toLowerCase())
+      return { valid: false, reason: 'proof signature does not match proof.from' };
+  } catch {
+    return { valid: false, reason: 'invalid proof signature' };
   }
 
   // ── Tier 2: on-chain receipt verification ──────────────────────────────────

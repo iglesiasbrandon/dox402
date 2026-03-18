@@ -1,6 +1,6 @@
 import { InferenceGate } from './dox402';
 import { Env, InferRequest, DepositRequest, DocumentUploadRequest, AdminWalletStatus, WalletRegistryEntry } from './types';
-import { USDC_CONTRACT } from './constants';
+import { USDC_CONTRACT, MAX_PROMPT_LENGTH } from './constants';
 import { verifySiweLogin } from './siwe';
 import { createSessionToken, verifySessionToken, TOKEN_EXPIRY_SECS, buildSessionCookie, buildClearCookie, parseCookieToken } from './session';
 import { parseSiwxHeader, verifySiwxPayload, buildSiwxExtension } from './siwx';
@@ -469,6 +469,9 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
       if (!authWallet) return unauthorized();
 
       const prompt = url.searchParams.get('prompt') || 'test query';
+      if (prompt.length > MAX_PROMPT_LENGTH) {
+        return Response.json({ error: 'Prompt too large' }, { status: 400 });
+      }
       const stub = getTypedStub(env, authWallet);
       return stub.handleRagDebug(prompt);
     }
