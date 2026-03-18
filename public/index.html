@@ -1594,13 +1594,15 @@ POST   /documents/reindex re-upsert all document vectors
       if (!receipt || receipt.status !== '0x1') throw new Error('Transaction reverted');
 
       // Submit deposit proof with retry (server RPC may lag behind wallet RPC)
-      setTopupStatus('Confirmed! Adding tokens…');
+      setTopupStatus('Confirmed! Signing proof…');
       const proof = {
         txHash, from: actualFrom,
         amount: String(topupMicro),
         timestamp: Math.floor(Date.now() / 1000),
         signature: '',
       };
+      proof.signature = await signProof(proof, actualFrom);
+      setTopupStatus('Adding tokens…');
       const proofBody = JSON.stringify({ walletAddress: actualFrom, proof: btoa(JSON.stringify(proof)) });
       let depRes, depData;
       for (let attempt = 0; attempt < 5; attempt++) {
