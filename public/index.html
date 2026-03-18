@@ -424,19 +424,7 @@
       .lp-headline { font-size: 22px; }
     }
 
-    /* ── Tab row for prompt/documents ─────────────────────────────── */
-    .tab-row {
-      display: flex; gap: 0; margin-bottom: 10px;
-      border-bottom: 1px solid var(--border);
-    }
-    .tab-btn {
-      background: none; border: none; border-bottom: 2px solid transparent;
-      padding: 6px 14px; font-size: 12px; font-weight: 600;
-      color: var(--muted); cursor: pointer; transition: color .15s, border-color .15s;
-      text-transform: uppercase; letter-spacing: .06em;
-    }
-    .tab-btn:hover { color: var(--text); }
-    .tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+    /* ── (tab row removed — files now inline) ───────────────────── */
 
     /* ── RAG toggle ─────────────────────────────────────────── */
     .rag-toggle {
@@ -453,39 +441,52 @@
     }
     .rag-toggle.disabled { opacity: 0.35; pointer-events: none; }
 
-    /* ── Documents panel ─────────────────────────────────────── */
-    .docs-panel { display: none; }
-    .docs-panel.active { display: block; }
-    .prompt-panel { display: block; }
-    .prompt-panel.hidden { display: none; }
+    /* ── Inline files section ─────────────────────────────────── */
+    .files-section {
+      display: none; /* hidden until wallet connected */
+      flex-direction: column; gap: 6px;
+      margin-bottom: 10px;
+    }
+    .files-section.visible { display: flex; }
 
-    .doc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; max-height: 200px; overflow-y: auto; }
-    .doc-item {
-      display: flex; align-items: center; justify-content: space-between;
-      background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r);
-      padding: 8px 12px; font-size: 12px;
+    .doc-list-inline {
+      display: flex; flex-wrap: wrap; gap: 6px;
     }
-    .doc-item-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-    .doc-item-title { color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .doc-item-meta { font-size: 10px; color: var(--muted); font-family: var(--mono); }
-    .doc-del-btn {
-      background: none; border: none; color: var(--muted); font-size: 16px;
-      cursor: pointer; padding: 2px 6px; transition: color .15s; flex-shrink: 0;
+    .doc-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 20px;
+      padding: 4px 10px 4px 12px; font-size: 11px; color: var(--text);
+      max-width: 220px;
     }
-    .doc-del-btn:hover { color: var(--red); }
-    .doc-empty { font-size: 12px; color: var(--muted); text-align: center; padding: 20px 0; }
-    .doc-upload-form { display: flex; flex-direction: column; gap: 8px; }
-    .doc-drop-zone {
-      border: 2px dashed var(--border); border-radius: 12px;
-      padding: 24px 16px; text-align: center; cursor: pointer;
+    .doc-chip-name {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      font-weight: 500;
+    }
+    .doc-chip-size {
+      font-size: 10px; color: var(--muted); font-family: var(--mono);
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .doc-chip-del {
+      background: none; border: none; color: var(--muted); font-size: 13px;
+      cursor: pointer; padding: 0 2px; transition: color .15s; flex-shrink: 0;
+      line-height: 1;
+    }
+    .doc-chip-del:hover { color: var(--red); }
+
+    .doc-drop-zone-compact {
+      border: 1px dashed var(--border); border-radius: var(--r);
+      padding: 8px 14px; cursor: pointer;
       transition: border-color 0.2s, background 0.2s;
-      font-size: 13px; color: var(--muted);
+      display: flex; align-items: center; gap: 10px;
     }
-    .doc-drop-zone:hover { border-color: var(--accent); }
-    .doc-drop-zone.drag-over { border-color: var(--accent); background: rgba(237,158,51,0.08); }
-    .doc-drop-zone.uploading { pointer-events: none; opacity: 0.6; }
-    .doc-drop-zone input[type="file"] { display: none; }
-    #docUploadStatus { font-size: 11px; color: var(--muted); display: none; text-align: center; margin-top: 4px; }
+    .doc-drop-zone-compact:hover { border-color: var(--accent); }
+    .doc-drop-zone-compact.drag-over { border-color: var(--accent); background: rgba(237,158,51,0.08); }
+    .doc-drop-zone-compact.uploading { pointer-events: none; opacity: 0.6; }
+    .doc-drop-zone-compact input[type="file"] { display: none; }
+    .drop-label { font-size: 12px; color: var(--muted); }
+    .drop-types { font-size: 10px; color: var(--border); font-family: var(--mono); margin-left: auto; }
+
+    #docUploadStatus { font-size: 11px; color: var(--muted); display: none; text-align: center; }
   </style>
 </head>
 <body>
@@ -825,64 +826,49 @@ POST   /documents/reindex re-upsert all document vectors
 
     </div>
 
-    <!-- Prompt / Documents tabs -->
+    <!-- Prompt card -->
     <div class="card">
-      <div class="tab-row">
-        <button class="tab-btn active" id="tabPrompt" onclick="switchTab('prompt')">Prompt</button>
-        <button class="tab-btn" id="tabDocs" onclick="switchTab('docs')">📄 Files <span id="docCount">(0)</span></button>
+      <!-- Model row -->
+      <div class="model-row">
+        <span class="model-label">Model</span>
+        <select id="modelSelect" class="model-select">
+          <option value="@cf/meta/llama-3.1-8b-instruct">Llama 3.1 8B · fast</option>
+          <option value="@cf/meta/llama-3.3-70b-instruct-fp8-fast">Llama 3.3 70B · smart</option>
+          <option value="@cf/google/gemma-3-12b-it">Gemma 3 12B</option>
+          <option value="@cf/mistral/mistral-7b-instruct-v0.2">Mistral 7B</option>
+          <option value="@cf/deepseek-ai/deepseek-r1-distill-qwen-32b">DeepSeek R1 32B</option>
+        </select>
+        <label class="rag-toggle disabled" id="ragToggleLabel" title="Augment with your uploaded documents">
+          <input type="checkbox" id="ragToggle" disabled />
+          <span class="rag-label">RAG</span>
+        </label>
       </div>
 
-      <!-- Prompt panel -->
-      <div class="prompt-panel" id="promptPanel">
-        <div class="model-row">
-          <span class="model-label">Model</span>
-          <select id="modelSelect" class="model-select">
-            <option value="@cf/meta/llama-3.1-8b-instruct">Llama 3.1 8B · fast</option>
-            <option value="@cf/meta/llama-3.3-70b-instruct-fp8-fast">Llama 3.3 70B · smart</option>
-            <option value="@cf/google/gemma-3-12b-it">Gemma 3 12B</option>
-            <option value="@cf/mistral/mistral-7b-instruct-v0.2">Mistral 7B</option>
-            <option value="@cf/deepseek-ai/deepseek-r1-distill-qwen-32b">DeepSeek R1 32B</option>
-          </select>
-          <label class="rag-toggle disabled" id="ragToggleLabel" title="Augment with your uploaded documents">
-            <input type="checkbox" id="ragToggle" disabled />
-            <span class="rag-label">RAG</span>
-          </label>
+      <!-- Files section (inline, below model row) -->
+      <div class="files-section" id="filesSection">
+        <div id="docList" class="doc-list-inline"></div>
+        <div class="doc-drop-zone-compact" id="docDropZone">
+          <input type="file" id="docFileInput" accept=".txt,.md,.csv,.json,.html,.pdf,.docx" />
+          <span class="drop-label">Drop file or <span style="color:var(--accent)">browse</span></span>
+          <span class="drop-types">.pdf .docx .txt .md .csv .json .html</span>
         </div>
-        <textarea id="promptIn" placeholder="Ask anything…" rows="4"></textarea>
-        <!-- Live token counter + estimate toggle -->
-        <div id="estRow" style="display:none;margin-top:7px;align-items:center;justify-content:space-between">
-          <span id="estTokens" style="font-size:11px;color:var(--muted);font-family:var(--mono)"></span>
-          <button class="btn-ghost" id="estToggleBtn" style="font-size:11px;padding:4px 10px">Estimate cost →</button>
-        </div>
-        <!-- Estimate breakdown card -->
-        <div class="card" id="estCard" style="display:none;margin-top:10px;padding:14px 16px">
-          <div class="card-title" style="margin-bottom:10px">Cost Estimate</div>
-          <div id="estBody" style="font-family:var(--mono);font-size:12px;color:var(--muted);line-height:2.1"></div>
-          <div style="font-size:11px;color:var(--muted);margin-top:10px;opacity:0.55">output range assumes 400–2,000 chars</div>
-        </div>
-        <button class="btn-primary" id="sendBtn">Send →</button>
+        <span id="docUploadStatus"></span>
       </div>
 
-      <!-- Files panel -->
-      <div class="docs-panel" id="docsPanel">
-        <div id="docAuthGate" style="font-size:12px;color:var(--muted);text-align:center;padding:24px 0">
-          Connect your wallet to upload and manage files.
-        </div>
-        <div id="docAuthContent" style="display:none">
-          <div id="docList" class="doc-list">
-            <div class="doc-empty" id="docEmpty">No files uploaded yet.</div>
-          </div>
-          <hr class="divider" />
-          <div class="doc-upload-form">
-            <div class="doc-drop-zone" id="docDropZone">
-              <input type="file" id="docFileInput" accept=".txt,.md,.csv,.json,.html,.pdf,.docx" />
-              <div style="margin-bottom:4px">Drop a file here or <span style="color:var(--accent);text-decoration:underline">browse</span></div>
-              <div style="font-size:11px;color:var(--border)">.txt, .md, .csv, .json, .html, .pdf, .docx</div>
-            </div>
-            <span id="docUploadStatus"></span>
-          </div>
-        </div>
+      <!-- Prompt textarea -->
+      <textarea id="promptIn" placeholder="Ask anything…" rows="4"></textarea>
+      <!-- Live token counter + estimate toggle -->
+      <div id="estRow" style="display:none;margin-top:7px;align-items:center;justify-content:space-between">
+        <span id="estTokens" style="font-size:11px;color:var(--muted);font-family:var(--mono)"></span>
+        <button class="btn-ghost" id="estToggleBtn" style="font-size:11px;padding:4px 10px">Estimate cost →</button>
       </div>
+      <!-- Estimate breakdown card -->
+      <div class="card" id="estCard" style="display:none;margin-top:10px;padding:14px 16px">
+        <div class="card-title" style="margin-bottom:10px">Cost Estimate</div>
+        <div id="estBody" style="font-family:var(--mono);font-size:12px;color:var(--muted);line-height:2.1"></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:10px;opacity:0.55">output range assumes 400–2,000 chars</div>
+      </div>
+      <button class="btn-primary" id="sendBtn">Send →</button>
     </div>
 
     <!-- Conversation (hidden until there's actual history) -->
@@ -1109,10 +1095,8 @@ POST   /documents/reindex re-upsert all document vectors
     documentCount = 0;
     totalDocChars = 0;
     documentNames = [];
-    document.getElementById('docCount').textContent = '(0)';
     updateRagToggle();
-    // Switch back to prompt tab
-    switchTab('prompt');
+    document.getElementById('filesSection').classList.remove('visible');
   }
 
   function showConnected(addr) {
@@ -1121,9 +1105,8 @@ POST   /documents/reindex re-upsert all document vectors
     document.getElementById('walletDisconnected').style.display = 'none';
     document.getElementById('pill').style.display = 'flex';
     document.getElementById('estRow').style.display = 'flex';
-    // Show files content, hide auth gate
-    document.getElementById('docAuthGate').style.display = 'none';
-    document.getElementById('docAuthContent').style.display = 'block';
+    // Show files section when wallet connected
+    document.getElementById('filesSection').classList.add('visible');
     updateEstimate();
   }
 
@@ -1741,25 +1724,6 @@ POST   /documents/reindex re-upsert all document vectors
     } catch (_) {}
   }
 
-  // ── Tab switching ─────────────────────────────────────────────────────────
-  function switchTab(tab) {
-    const promptPanel = document.getElementById('promptPanel');
-    const docsPanel = document.getElementById('docsPanel');
-    const tabPrompt = document.getElementById('tabPrompt');
-    const tabDocs = document.getElementById('tabDocs');
-    if (tab === 'prompt') {
-      promptPanel.classList.remove('hidden');
-      docsPanel.classList.remove('active');
-      tabPrompt.classList.add('active');
-      tabDocs.classList.remove('active');
-    } else {
-      promptPanel.classList.add('hidden');
-      docsPanel.classList.add('active');
-      tabPrompt.classList.remove('active');
-      tabDocs.classList.add('active');
-    }
-  }
-
   // ── Document management ───────────────────────────────────────────────────
   let documentCount = 0;
   let totalDocChars = 0;
@@ -1786,19 +1750,15 @@ POST   /documents/reindex re-upsert all document vectors
 
   function renderDocumentList(docs) {
     const list = document.getElementById('docList');
-    const countSpan = document.getElementById('docCount');
-    countSpan.textContent = `(${docs.length})`;
     if (docs.length === 0) {
-      list.innerHTML = '<div class="doc-empty" id="docEmpty">No files uploaded yet.</div>';
+      list.innerHTML = '';
       return;
     }
     list.innerHTML = docs.map(d => `
-      <div class="doc-item">
-        <div class="doc-item-info">
-          <div class="doc-item-title">${escapeHtml(d.title)}</div>
-          <div class="doc-item-meta">${d.chunkCount} chunks · ${(d.charCount / 1024).toFixed(1)} KB · ${new Date(d.createdAt).toLocaleDateString()}</div>
-        </div>
-        <button class="doc-del-btn" onclick="deleteDocument('${d.id}')" title="Delete document">✕</button>
+      <div class="doc-chip" title="${escapeHtml(d.title)} · ${d.chunkCount} chunks · ${(d.charCount / 1024).toFixed(1)} KB">
+        <span class="doc-chip-name">${escapeHtml(d.title)}</span>
+        <span class="doc-chip-size">${(d.charCount / 1024).toFixed(1)}KB</span>
+        <button class="doc-chip-del" onclick="deleteDocument('${d.id}')" title="Remove">✕</button>
       </div>
     `).join('');
   }
@@ -1935,8 +1895,9 @@ POST   /documents/reindex re-upsert all document vectors
       }
 
       const meta = await res.json();
-      statusEl.textContent = `Uploaded: ${meta.chunkCount} chunks, cost ${meta.embeddingCostTokens} tokens`;
+      statusEl.textContent = `✓ ${meta.chunkCount} chunks, ${meta.embeddingCostTokens} tokens`;
       statusEl.style.color = 'var(--green)';
+      setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
 
       // Clear form
       fileInput.value = '';
