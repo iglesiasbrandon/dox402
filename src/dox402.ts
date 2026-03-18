@@ -252,7 +252,10 @@ export class InferenceGate extends DurableObject<Env> {
     if (body.useRag) {
       let ragInjected = false;
       try {
-        const ragContext = await queryRagContext(this.env, this.wallet, body.prompt);
+        // Pass valid document IDs to filter out orphaned Vectorize vectors from deleted docs
+        const validDocs = this.sql.exec<{ id: string }>('SELECT id FROM documents').toArray();
+        const validDocIds = new Set(validDocs.map(d => d.id));
+        const ragContext = await queryRagContext(this.env, this.wallet, body.prompt, validDocIds);
         if (ragContext) {
           messages.unshift({ role: 'system' as const, content: ragContext.systemMessage });
           ragCost = ragContext.queryCost;
@@ -974,15 +977,18 @@ export class InferenceGate extends DurableObject<Env> {
       chunkIds = Array.from({ length: 100 }, (_, i) => `${documentId}:${i}`);
     }
 
-    // Delete from Vectorize
-    await deleteDocumentVectors(this.env, chunkIds);
+    // Delete from SQL first — this prevents the RAG R2 fallback from finding the
+    // document if an inference request arrives mid-deletion (Vectorize is empty but
+    // SQL still has the doc → fallback fetches stale content from R2).
+    this.sql.exec('DELETE FROM document_chunks WHERE document_id = ?', documentId);
+    this.sql.exec('DELETE FROM documents WHERE id = ?', documentId);
 
     // Delete content from R2 (non-fatal if it fails)
     await deleteDocumentContent(this.env, this.wallet, documentId);
 
-    // Delete from SQL
-    this.sql.exec('DELETE FROM document_chunks WHERE document_id = ?', documentId);
-    this.sql.exec('DELETE FROM documents WHERE id = ?', documentId);
+    // Delete vectors from Vectorize (non-fatal — orphaned vectors are harmless
+    // since metadata.wallet filtering prevents cross-wallet leakage)
+    await deleteDocumentVectors(this.env, chunkIds);
 
     return Response.json({ ok: true, deletedChunks: chunkIds.length });
   }

@@ -273,6 +273,7 @@ export async function queryRagContext(
   env: Env,
   wallet: string,
   prompt: string,
+  validDocIds?: Set<string>,
 ): Promise<{ systemMessage: string; chunkCount: number; queryCost: number } | null> {
   const [queryVector] = await generateEmbeddings(env, [prompt]);
 
@@ -289,12 +290,14 @@ export async function queryRagContext(
     return null;
   }
 
-  // Group chunks by documentId to avoid the LLM seeing each chunk as a separate file
+  // Group chunks by documentId to avoid the LLM seeing each chunk as a separate file.
+  // When validDocIds is provided, skip chunks from deleted documents (orphaned vectors).
   const docChunks = new Map<string, string[]>();
   for (const m of relevant) {
     const meta = m.metadata as Record<string, unknown>;
     const text = meta?.text as string;
     const docId = (meta?.documentId as string) || 'unknown';
+    if (validDocIds && !validDocIds.has(docId)) continue;
     if (typeof text === 'string' && text.length > 0) {
       if (!docChunks.has(docId)) docChunks.set(docId, []);
       docChunks.get(docId)!.push(text);

@@ -907,7 +907,7 @@ POST   /documents/reindex re-upsert all document vectors
 <!-- ── Top-up modal overlay ─────────────────────────────────────────────── -->
 
 <!-- PDF & DOCX client-side parsers (loaded before main script) -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js" crossorigin></script>
 
 <script>
@@ -1188,7 +1188,10 @@ POST   /documents/reindex re-upsert all document vectors
     const histMsgs    = document.querySelectorAll('.msg').length;
 
     const ragOn = document.getElementById('ragToggle')?.checked;
-    const ragChars = ragOn ? totalDocChars : 0;
+    // RAG injects at most TOP_K (5) chunks of ~CHUNK_SIZE (1600) chars each,
+    // not the full document corpus. Cap the estimate to avoid falsely disabling send.
+    const RAG_MAX_INJECTED_CHARS = 5 * 1600; // RAG_TOP_K × RAG_CHUNK_CHAR_SIZE
+    const ragChars = ragOn ? Math.min(totalDocChars, RAG_MAX_INJECTED_CHARS) : 0;
     const totalChars  = promptChars + histChars + ragChars;
 
     // Live counter text (separate line items)
@@ -1869,7 +1872,7 @@ POST   /documents/reindex re-upsert all document vectors
         statusEl.style.color = 'var(--muted)';
         statusEl.style.display = 'block';
         pdfjsLib.GlobalWorkerOptions.workerSrc =
-          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.worker.min.js';
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         const arrayBuf = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
         const pages = [];

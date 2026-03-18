@@ -1166,6 +1166,55 @@ describe('InferenceGate — document CRUD', () => {
     const res = await gate.handleDocumentDelete('nonexistent');
     expect(res.status).toBe(404);
   });
+
+  it('after delete, RAG fallback does not inject deleted document content', async () => {
+    const { gate, storage, mockAI, mockR2Store, mockVectorize } = await makeTestDO();
+    setupAIForDocuments(mockAI);
+    setBalance(storage, 50000);
+
+    // Upload a document
+    const uploadRes = await gate.handleDocumentUpload(
+      { title: 'old doc', content: 'This content should not appear after deletion' },
+      TEST_WALLET,
+    );
+    const { id: docId } = await uploadRes.json() as { id: string };
+
+    // Verify doc exists in SQL and R2
+    const docsBefore = storage.sql.exec<{ id: string }>('SELECT id FROM documents').toArray();
+    expect(docsBefore.length).toBe(1);
+    expect(mockR2Store.size).toBe(1);
+
+    // Delete the document
+    await gate.handleDocumentDelete(docId);
+
+    // SQL should be empty — this is the critical check.
+    // The RAG R2 fallback queries SQL for docs; if SQL is cleared first,
+    // the fallback won't find any docs and won't fetch stale R2 content.
+    const docsAfter = storage.sql.exec<{ id: string }>('SELECT id FROM documents').toArray();
+    expect(docsAfter.length).toBe(0);
+
+    // Force Vectorize to return nothing (simulates the deleted state)
+    mockVectorize.query.mockResolvedValue({ count: 0, matches: [] });
+
+    // Inference with RAG should NOT inject the deleted document
+    const inferRes = await gate.handleInfer(
+      { prompt: 'hello', walletAddress: TEST_WALLET, useRag: true },
+      null, 'localhost', TEST_WALLET,
+    );
+    const body = await drainStream(inferRes);
+
+    // The AI should have been called — verify the system message does NOT
+    // contain the deleted document's content (RAG fallback should find 0 docs)
+    const aiCalls = mockAI.run.mock.calls;
+    const inferCall = aiCalls.find((c: unknown[]) => c[0] !== '@cf/baai/bge-base-en-v1.5');
+    if (inferCall) {
+      const messages = (inferCall[1] as { messages: Array<{ role: string; content: string }> }).messages;
+      const systemMsg = messages.find((m: { role: string }) => m.role === 'system');
+      if (systemMsg) {
+        expect(systemMsg.content).not.toContain('This content should not appear after deletion');
+      }
+    }
+  });
 });
 
 // ── RAG-augmented inference ──────────────────────────────────────────────────
@@ -1192,9 +1241,16 @@ describe('InferenceGate — RAG-augmented inference', () => {
     setupAIForRAG(mockAI);
     setBalance(storage, 10000);
 
+    // Insert a document in SQL so the Vectorize result's documentId passes validation
+    storage.sql.exec(
+      `INSERT INTO documents (id, title, char_count, chunk_count, embedding_cost, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      'doc', 'Test Doc', 100, 1, 1, Date.now(),
+    );
+
     mockVectorize.query.mockResolvedValue({
       count: 1,
-      matches: [{ id: 'doc:0', score: 0.8, metadata: { text: 'Some relevant context' } }],
+      matches: [{ id: 'doc:0', score: 0.8, metadata: { text: 'Some relevant context', documentId: 'doc' } }],
     });
 
     const res = await gate.handleInfer(
@@ -1258,9 +1314,16 @@ describe('InferenceGate — RAG-augmented inference', () => {
     setupAIForRAG(mockAI);
     setBalance(storage, 10000);
 
+    // Insert a document in SQL so the Vectorize result's documentId passes validation
+    storage.sql.exec(
+      `INSERT INTO documents (id, title, char_count, chunk_count, embedding_cost, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      'doc', 'Test Doc', 100, 1, 1, Date.now(),
+    );
+
     mockVectorize.query.mockResolvedValue({
       count: 1,
-      matches: [{ id: 'doc:0', score: 0.8, metadata: { text: 'Context chunk' } }],
+      matches: [{ id: 'doc:0', score: 0.8, metadata: { text: 'Context chunk', documentId: 'doc' } }],
     });
 
     const res = await gate.handleInfer(
