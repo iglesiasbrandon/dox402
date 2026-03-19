@@ -384,9 +384,54 @@
     .msg-user .msg-role { color: var(--accent); }
     .msg-content {
       font-size: 13.5px; line-height: 1.7; color: var(--text);
-      white-space: pre-wrap; word-break: break-word;
+      word-break: break-word;
     }
-    .msg-user .msg-content { color: var(--muted); }
+    .msg-user .msg-content { color: var(--muted); white-space: pre-wrap; }
+    /* During streaming, show raw text with pre-wrap; after render, normal flow */
+    .msg-content.cursor { white-space: pre-wrap; }
+
+    /* ── Markdown in assistant messages ─────────────────────────── */
+    .msg-assistant .msg-content p { margin: 0 0 .6em; }
+    .msg-assistant .msg-content p:last-child { margin-bottom: 0; }
+    .msg-assistant .msg-content h1,
+    .msg-assistant .msg-content h2,
+    .msg-assistant .msg-content h3 {
+      font-size: 1em; font-weight: 700; margin: .8em 0 .3em; color: var(--text);
+    }
+    .msg-assistant .msg-content h1 { font-size: 1.15em; }
+    .msg-assistant .msg-content ul,
+    .msg-assistant .msg-content ol {
+      margin: .3em 0 .6em; padding-left: 1.4em;
+    }
+    .msg-assistant .msg-content li { margin-bottom: .2em; }
+    .msg-assistant .msg-content code {
+      background: rgba(255,255,255,.07); padding: 1px 5px; border-radius: 3px;
+      font-size: 12px; font-family: ui-monospace, SFMono-Regular, monospace;
+    }
+    .msg-assistant .msg-content pre {
+      background: #0d0d0d; border: 1px solid rgba(255,255,255,.08);
+      border-radius: 6px; padding: 10px 12px; overflow-x: auto;
+      margin: .4em 0 .6em;
+    }
+    .msg-assistant .msg-content pre code {
+      background: none; padding: 0; font-size: 12px; line-height: 1.5;
+    }
+    .msg-assistant .msg-content blockquote {
+      border-left: 3px solid var(--accent); margin: .4em 0; padding: .2em 0 .2em .8em;
+      color: var(--muted);
+    }
+    .msg-assistant .msg-content table {
+      border-collapse: collapse; margin: .4em 0; font-size: 12px; width: 100%;
+    }
+    .msg-assistant .msg-content th,
+    .msg-assistant .msg-content td {
+      border: 1px solid rgba(255,255,255,.1); padding: 4px 8px; text-align: left;
+    }
+    .msg-assistant .msg-content th { background: rgba(255,255,255,.05); font-weight: 600; }
+    .msg-assistant .msg-content strong { font-weight: 700; }
+    .msg-assistant .msg-content em { font-style: italic; }
+    .msg-assistant .msg-content a { color: var(--accent); text-decoration: underline; }
+    .msg-assistant .msg-content hr { border: none; border-top: 1px solid rgba(255,255,255,.1); margin: .6em 0; }
     .msg-content.cursor::after { content: '▋'; animation: blink 1s step-end infinite; }
     .msg-info-btn {
       background: none; border: none; cursor: pointer; padding: 0 3px;
@@ -1345,6 +1390,7 @@ POST   /documents/reindex re-upsert all document vectors
       const reader = inferRes.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
+      let rawText = '';
       let capturedUsage = null;
       while (true) {
         const { value, done } = await reader.read();
@@ -1356,10 +1402,11 @@ POST   /documents/reindex re-upsert all document vectors
           if (!line.startsWith('data: ')) continue;
           const d = line.slice(6).trim();
           if (d === '[DONE]') continue;
-          try { const p = JSON.parse(d); if (p.response) { assistantContent.textContent += p.response; thread.scrollTop = thread.scrollHeight; } if (p.usage) capturedUsage = p.usage; } catch (_) {}
+          try { const p = JSON.parse(d); if (p.response) { rawText += p.response; assistantContent.textContent = rawText; thread.scrollTop = thread.scrollHeight; } if (p.usage) capturedUsage = p.usage; } catch (_) {}
         }
       }
       setStreaming(false, assistantContent);
+      assistantContent.innerHTML = renderMarkdown(rawText);
       setBusy(false);
       const usedFiles = document.getElementById('ragToggle')?.checked ? [...documentNames] : [];
       attachUsageInfo(assistantEl, { model: pendingModel, preBalance: capturedPreBalance, files: usedFiles });
@@ -1434,6 +1481,7 @@ POST   /documents/reindex re-upsert all document vectors
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
+      let rawText = '';
       let capturedUsage = null;
       while (true) {
         const { value, done } = await reader.read();
@@ -1447,13 +1495,14 @@ POST   /documents/reindex re-upsert all document vectors
           if (data === '[DONE]') continue;
           try {
             const p = JSON.parse(data);
-            if (p.response) { assistantContent.textContent += p.response; thread.scrollTop = thread.scrollHeight; }
+            if (p.response) { rawText += p.response; assistantContent.textContent = rawText; thread.scrollTop = thread.scrollHeight; }
             if (p.usage) capturedUsage = p.usage;
           } catch (_) {}
         }
       }
 
       setStreaming(false, assistantContent);
+      assistantContent.innerHTML = renderMarkdown(rawText);
       setBusy(false);
       const usedFiles2 = useRag ? [...documentNames] : [];
       attachUsageInfo(assistantEl, { model, preBalance: capturedPreBalance, files: usedFiles2 });
@@ -1696,7 +1745,11 @@ POST   /documents/reindex re-upsert all document vectors
     roleEl.textContent = role === 'user' ? 'you' : 'dox402';
     const contentEl = document.createElement('div');
     contentEl.className = 'msg-content';
-    contentEl.textContent = content;
+    if (role === 'assistant' && content && typeof renderMarkdown === 'function') {
+      contentEl.innerHTML = renderMarkdown(content);
+    } else {
+      contentEl.textContent = content;
+    }
     div.appendChild(roleEl);
     div.appendChild(contentEl);
     thread.appendChild(div);
@@ -2011,6 +2064,10 @@ POST   /documents/reindex re-upsert all document vectors
 </script>
 
 
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/highlight.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/styles/github-dark.min.css">
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <script>
   mermaid.initialize({
@@ -2043,6 +2100,26 @@ POST   /documents/reindex re-upsert all document vectors
       fontSize:              '12px',
     },
   });
+
+  // ── Markdown rendering ─────────────────────────────────────────────────────
+  marked.setOptions({
+    highlight: function(code, lang) {
+      if (lang && hljs.getLanguage(lang)) {
+        try { return hljs.highlight(code, { language: lang }).value; } catch (_) {}
+      }
+      return hljs.highlightAuto(code).value;
+    },
+    breaks: true,
+    gfm: true,
+  });
+
+  function renderMarkdown(raw) {
+    const html = marked.parse(raw);
+    return DOMPurify.sanitize(html, {
+      ADD_TAGS: ['pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
+      ADD_ATTR: ['class'],
+    });
+  }
 
   // Render mermaid diagrams on first toggle open
   document.querySelectorAll('.diagram-toggle').forEach(toggle => {
