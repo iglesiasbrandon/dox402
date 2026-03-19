@@ -88,7 +88,7 @@ Authenticated endpoints accept either an `Authorization: Bearer <token>` header 
 ### Authenticated
 | Endpoint | Description |
 |---|---|
-| `POST /infer` | Run inference (post-billed from balance, SSE stream) |
+| `POST /infer` | Run inference (post-billed from balance, SSE stream). Accepts optional `systemPrompt` (max 2000 chars) for persistent instructions. |
 | `POST /deposit` | Top-up balance with payment proof |
 | `GET /balance` | Token balance + usage stats |
 | `GET /history` | Conversation messages + metadata |
@@ -97,6 +97,14 @@ Authenticated endpoints accept either an `Authorization: Bearer <token>` header 
 | `GET /documents` | List uploaded documents |
 | `DELETE /documents/:id` | Delete document + Vectorize embeddings |
 | `POST /documents/reindex` | Re-upsert all document vectors (fixes metadata indexing) |
+
+### Admin (requires `ADMIN_SECRET` Bearer token)
+| Endpoint | Description |
+|---|---|
+| `GET /admin/wallets` | Paginated list of registered wallets |
+| `GET /admin/wallets/:wallet/status` | Detailed wallet status (balance, usage, documents) |
+| `GET /admin/stats` | Aggregate statistics (total wallets) |
+| `GET /admin/stale` | Identify zero-balance inactive wallets |
 
 ### SIWX (Single-Request Auth)
 

@@ -741,7 +741,7 @@ POST   /auth/logout   clear session cookie
        SIGN-IN-WITH-X header for single-request auth (SIWX)
 
 <strong>Authenticated (Cookie or SIWX)</strong>
-POST   /infer     run inference (post-billed)
+POST   /infer     run inference (post-billed, optional systemPrompt)
 POST   /deposit   top-up balance without inference
 GET    /balance   token balance + usage stats
 GET    /history   conversation messages + meta
@@ -752,6 +752,12 @@ POST   /documents         upload document for RAG
 GET    /documents         list uploaded documents
 DELETE /documents/:id     delete document + embeddings
 POST   /documents/reindex re-upsert all document vectors
+
+<strong>Admin (Bearer ADMIN_SECRET)</strong>
+GET    /admin/wallets              paginated wallet list
+GET    /admin/wallets/:wallet/status  wallet status + balance
+GET    /admin/stats                aggregate statistics
+GET    /admin/stale                zero-balance inactive wallets
 </pre>
       </div>
 
