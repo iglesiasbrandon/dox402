@@ -486,6 +486,23 @@
     }
     .rag-toggle.disabled { opacity: 0.35; pointer-events: none; }
 
+    /* ── System prompt ──────────────────────────────────────────── */
+    .sys-prompt-section { margin-bottom: 10px; }
+    .sys-prompt-toggle {
+      background: none; border: none; cursor: pointer; padding: 0;
+      color: var(--muted); font-size: 11px; font-family: var(--mono);
+      opacity: 0.6; transition: opacity .15s;
+    }
+    .sys-prompt-toggle:hover { opacity: 1; }
+    .sys-prompt-toggle.active { opacity: 1; color: var(--accent); }
+    .sys-prompt-input {
+      width: 100%; margin-top: 6px; padding: 8px 10px;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-size: 12px; font-family: var(--mono);
+      resize: vertical; line-height: 1.5;
+    }
+    .sys-prompt-input:focus { border-color: var(--accent); outline: none; }
+
     /* ── Inline files section ─────────────────────────────────── */
     .files-section {
       display: none; /* hidden until wallet connected */
@@ -893,6 +910,12 @@ POST   /documents/reindex re-upsert all document vectors
         </label>
       </div>
 
+      <!-- System prompt (collapsible) -->
+      <div class="sys-prompt-section">
+        <button class="sys-prompt-toggle" id="sysPromptToggle" type="button">⚙ System prompt</button>
+        <textarea id="sysPromptIn" class="sys-prompt-input" placeholder="e.g., You are a Python expert. Respond concisely." rows="3" style="display:none"></textarea>
+      </div>
+
       <!-- Files section (inline, below model row) -->
       <div class="files-section" id="filesSection">
         <div id="docList" class="doc-list-inline"></div>
@@ -1039,6 +1062,27 @@ POST   /documents/reindex re-upsert all document vectors
   document.getElementById('modelSelect').addEventListener('change', updateEstimate);
   document.getElementById('ragToggle').addEventListener('change', updateEstimate);
 
+  // ── System Prompt ───────────────────────────────────────────────────────────
+  const sysPromptToggle = document.getElementById('sysPromptToggle');
+  const sysPromptIn = document.getElementById('sysPromptIn');
+  // Load from localStorage
+  const savedSysPrompt = localStorage.getItem('ig_system_prompt') || '';
+  if (savedSysPrompt) {
+    sysPromptIn.value = savedSysPrompt;
+    sysPromptIn.style.display = 'block';
+    sysPromptToggle.classList.add('active');
+  }
+  sysPromptToggle.addEventListener('click', () => {
+    const showing = sysPromptIn.style.display !== 'none';
+    sysPromptIn.style.display = showing ? 'none' : 'block';
+    sysPromptToggle.classList.toggle('active', !showing);
+    if (!showing) sysPromptIn.focus();
+  });
+  sysPromptIn.addEventListener('input', () => {
+    localStorage.setItem('ig_system_prompt', sysPromptIn.value);
+    updateEstimate();
+  });
+
   // ── Wallet ─────────────────────────────────────────────────────────────────
   async function connectInjected() {
     if (!window.ethereum) {
@@ -1138,9 +1182,13 @@ POST   /documents/reindex re-upsert all document vectors
     document.getElementById('statusTxt').textContent = 'Conversation History';
     document.getElementById('dot').classList.remove('live');
     document.getElementById('respCard').style.display = 'none';
-    // Reset prompt card: clear file list, prompt text, and RAG state
+    // Reset prompt card: clear file list, prompt text, system prompt, and RAG state
     document.getElementById('docList').innerHTML = '';
     document.getElementById('promptIn').value = '';
+    document.getElementById('sysPromptIn').value = '';
+    document.getElementById('sysPromptIn').style.display = 'none';
+    document.getElementById('sysPromptToggle').classList.remove('active');
+    localStorage.removeItem('ig_system_prompt');
     documentCount = 0;
     totalDocChars = 0;
     documentNames = [];
@@ -1218,15 +1266,17 @@ POST   /documents/reindex re-upsert all document vectors
     const histChars   = getHistoryChars();
     const histMsgs    = document.querySelectorAll('.msg').length;
 
+    const sysPromptChars = countChars(document.getElementById('sysPromptIn').value);
     const ragOn = document.getElementById('ragToggle')?.checked;
     // RAG injects at most TOP_K (5) chunks of ~CHUNK_SIZE (1600) chars each,
     // not the full document corpus. Cap the estimate to avoid falsely disabling send.
     const RAG_MAX_INJECTED_CHARS = 5 * 1600; // RAG_TOP_K × RAG_CHUNK_CHAR_SIZE
     const ragChars = ragOn ? Math.min(totalDocChars, RAG_MAX_INJECTED_CHARS) : 0;
-    const totalChars  = promptChars + histChars + ragChars;
+    const totalChars  = promptChars + histChars + ragChars + sysPromptChars;
 
     // Live counter text (separate line items)
     const parts = [`~${promptChars.toLocaleString()} prompt`];
+    if (sysPromptChars > 0) parts.push(`${sysPromptChars.toLocaleString()} system`);
     if (histMsgs > 0) parts.push(`${histChars.toLocaleString()} history`);
     if (ragOn) parts.push(`${ragChars.toLocaleString()} files`);
     document.getElementById('estTokens').textContent = parts.join(' · ') + ' chars';
@@ -1369,7 +1419,7 @@ POST   /documents/reindex re-upsert all document vectors
       const inferRes = await fetch('/infer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'PAYMENT-SIGNATURE': proofHeader },
-        body: JSON.stringify({ prompt: pendingPrompt, walletAddress: actualFrom, model: pendingModel, useRag: document.getElementById('ragToggle')?.checked || false }),
+        body: JSON.stringify({ prompt: pendingPrompt, walletAddress: actualFrom, model: pendingModel, useRag: document.getElementById('ragToggle')?.checked || false, systemPrompt: document.getElementById('sysPromptIn').value || undefined }),
       });
       if (inferRes.status === 402) {
         const d = await inferRes.json();
@@ -1447,7 +1497,7 @@ POST   /documents/reindex re-upsert all document vectors
       const res = await fetch('/infer', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ prompt, walletAddress: wallet, model, useRag }),
+        body: JSON.stringify({ prompt, walletAddress: wallet, model, useRag, systemPrompt: document.getElementById('sysPromptIn').value || undefined }),
       });
 
       if (res.status === 401) {

@@ -59,6 +59,7 @@ export interface InferRequest {
   maxTokens?: number;    // default 512
   model?: string;        // Workers AI model ID — validated against ALLOWED_MODELS; falls back to AI_MODEL
   useRag?: boolean;      // opt-in RAG augmentation — retrieves relevant document chunks as context
+  systemPrompt?: string; // optional custom system instructions prepended to every request (max 2000 chars)
 }
 
 // Stored SIWE nonce — kept in an array of up to 5 per wallet

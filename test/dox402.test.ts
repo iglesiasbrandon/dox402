@@ -1762,3 +1762,80 @@ describe('Vectorize wallet filter regression (#71)', () => {
     expect(callArgs[1].filter).toEqual({ wallet: { $eq: TEST_WALLET } });
   });
 });
+
+// ── System Prompt (#56) ──────────────────────────────────────────────────────
+
+describe('system prompt (#56)', () => {
+  it('prepends system prompt as first message when provided', async () => {
+    const { gate, storage, mockAI } = await makeTestDO();
+    setBalance(storage, 10000);
+
+    const res = await gate.handleInfer(
+      { prompt: 'hello', walletAddress: TEST_WALLET, systemPrompt: 'You are a pirate.' },
+      null, 'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(200);
+
+    const inferenceCalls = mockAI.run.mock.calls.filter(
+      (call: unknown[]) => call[0] !== '@cf/baai/bge-base-en-v1.5',
+    );
+    const messages = (inferenceCalls[0][1] as { messages: Array<{ role: string; content: string }> }).messages;
+    expect(messages[0].role).toBe('system');
+    expect(messages[0].content).toBe('You are a pirate.');
+    expect(messages[1].role).toBe('user');
+    expect(messages[1].content).toBe('hello');
+  });
+
+  it('ignores empty/whitespace system prompt', async () => {
+    const { gate, storage, mockAI } = await makeTestDO();
+    setBalance(storage, 10000);
+
+    const res = await gate.handleInfer(
+      { prompt: 'hello', walletAddress: TEST_WALLET, systemPrompt: '   ' },
+      null, 'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(200);
+
+    const inferenceCalls = mockAI.run.mock.calls.filter(
+      (call: unknown[]) => call[0] !== '@cf/baai/bge-base-en-v1.5',
+    );
+    const messages = (inferenceCalls[0][1] as { messages: Array<{ role: string; content: string }> }).messages;
+    // No system message — first should be user
+    expect(messages[0].role).toBe('user');
+  });
+
+  it('truncates system prompt exceeding 2000 chars', async () => {
+    const { gate, storage, mockAI } = await makeTestDO();
+    setBalance(storage, 10000);
+
+    const longPrompt = 'x'.repeat(3000);
+    const res = await gate.handleInfer(
+      { prompt: 'hello', walletAddress: TEST_WALLET, systemPrompt: longPrompt },
+      null, 'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(200);
+
+    const inferenceCalls = mockAI.run.mock.calls.filter(
+      (call: unknown[]) => call[0] !== '@cf/baai/bge-base-en-v1.5',
+    );
+    const messages = (inferenceCalls[0][1] as { messages: Array<{ role: string; content: string }> }).messages;
+    expect(messages[0].role).toBe('system');
+    expect(messages[0].content.length).toBe(2000);
+  });
+
+  it('system prompt counts toward context window validation', async () => {
+    const { gate, storage, mockAI } = await makeTestDO();
+    setBalance(storage, 10000);
+
+    // Llama 3.1 8B has 7968 token context ≈ 31,872 chars
+    // Use a system prompt that, combined with the user prompt, exceeds this
+    const hugeSystemPrompt = 'x'.repeat(2000);
+    const hugeUserPrompt = 'y'.repeat(30_000);
+    const res = await gate.handleInfer(
+      { prompt: hugeUserPrompt, walletAddress: TEST_WALLET, systemPrompt: hugeSystemPrompt },
+      null, 'localhost', TEST_WALLET,
+    );
+    expect(res.status).toBe(413);
+    expect(mockAI.run).not.toHaveBeenCalled();
+  });
+});

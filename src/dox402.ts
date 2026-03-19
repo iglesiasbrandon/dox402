@@ -333,6 +333,13 @@ export class InferenceGate extends DurableObject<Env> {
       if (ragStatus === 'off') ragStatus = 'failed'; // useRag was true but nothing was injected
     }
 
+    // Inject user's custom system prompt (prepended before RAG context)
+    const MAX_SYSTEM_PROMPT_CHARS = 2000;
+    if (body.systemPrompt?.trim()) {
+      const trimmed = body.systemPrompt.trim().slice(0, MAX_SYSTEM_PROMPT_CHARS);
+      messages.unshift({ role: 'system', content: trimmed });
+    }
+
     // Validate total input against model's context window
     const modelRates = NEURON_RATES[body.model || '@cf/meta/llama-3.1-8b-instruct'];
     if (modelRates) {
