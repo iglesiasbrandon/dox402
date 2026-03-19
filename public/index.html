@@ -951,6 +951,7 @@ POST   /documents/reindex re-upsert all document vectors
           <span id="statusTxt">Conversation History</span>
         </div>
         <div class="resp-actions">
+          <button class="btn-ghost" id="exportBtn">Export</button>
           <button class="btn-ghost" id="copyLastBtn">Copy</button>
           <button class="btn-ghost" id="clearHistoryBtn">Clear</button>
         </div>
@@ -2095,6 +2096,38 @@ POST   /documents/reindex re-upsert all document vectors
     navigator.clipboard.writeText(msgs[msgs.length - 1].textContent);
   }
 
+  function exportConversation() {
+    const thread = document.getElementById('convoThread');
+    const msgs = thread.querySelectorAll('.msg');
+    if (!msgs.length) return;
+    let md = '# DOX402 Conversation Export\n';
+    md += `**Date:** ${new Date().toISOString().slice(0, 10)}\n\n---\n\n`;
+    msgs.forEach(msg => {
+      const isUser = msg.classList.contains('msg-user');
+      const role = isUser ? 'You' : 'DOX402';
+      const content = msg.querySelector('.msg-content')?.textContent || '';
+      md += `### ${role}\n\n${content}\n\n`;
+      if (!isUser) {
+        const info = msg.querySelector('.msg-info-panel');
+        if (info) {
+          const model = info.querySelector('.msg-info-row:first-child span:last-child');
+          const cost = info.querySelector('.msg-info-row:nth-child(2) span:last-child');
+          if (model) md += `> Model: ${model.textContent}\n`;
+          if (cost) md += `> Cost: ${cost.textContent}\n`;
+          md += '\n';
+        }
+      }
+      md += '---\n\n';
+    });
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dox402-chat-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   // ── Event listener registration (no inline handlers) ──────────────────────
   document.getElementById('pillAddBtn').addEventListener('click', toggleTopUp);
   document.querySelectorAll('.topup-preset').forEach(el => {
@@ -2109,6 +2142,7 @@ POST   /documents/reindex re-upsert all document vectors
   document.getElementById('payWalletBtn').addEventListener('click', payWithWallet);
   document.getElementById('estToggleBtn').addEventListener('click', toggleEstimate);
   document.getElementById('sendBtn').addEventListener('click', submit);
+  document.getElementById('exportBtn').addEventListener('click', exportConversation);
   document.getElementById('copyLastBtn').addEventListener('click', copyLast);
   document.getElementById('clearHistoryBtn').addEventListener('click', clearHistory);
 </script>
