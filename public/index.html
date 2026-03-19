@@ -1453,7 +1453,7 @@ POST   /documents/reindex re-upsert all document vectors
           if (!line.startsWith('data: ')) continue;
           const d = line.slice(6).trim();
           if (d === '[DONE]') continue;
-          try { const p = JSON.parse(d); if (p.response) { rawText += p.response; assistantContent.textContent = rawText; thread.scrollTop = thread.scrollHeight; } if (p.usage) capturedUsage = p.usage; } catch (_) {}
+          try { const p = JSON.parse(d); if (p.response) { rawText += p.response; assistantContent.textContent = rawText; thread.scrollTop = thread.scrollHeight; updateStreamCount(rawText.length); } if (p.usage) capturedUsage = p.usage; } catch (_) {}
         }
       }
       setStreaming(false, assistantContent);
@@ -1546,7 +1546,7 @@ POST   /documents/reindex re-upsert all document vectors
           if (data === '[DONE]') continue;
           try {
             const p = JSON.parse(data);
-            if (p.response) { rawText += p.response; assistantContent.textContent = rawText; thread.scrollTop = thread.scrollHeight; }
+            if (p.response) { rawText += p.response; assistantContent.textContent = rawText; thread.scrollTop = thread.scrollHeight; updateStreamCount(rawText.length); }
             if (p.usage) capturedUsage = p.usage;
           } catch (_) {}
         }
@@ -2070,6 +2070,11 @@ POST   /documents/reindex re-upsert all document vectors
     document.getElementById('dot').classList.toggle('live', on);
     document.getElementById('statusTxt').textContent = on ? 'Streaming…' : 'Conversation History';
     if (contentEl) contentEl.classList.toggle('cursor', on);
+  }
+
+  function updateStreamCount(charCount) {
+    const tokens = Math.ceil(charCount / 4);
+    document.getElementById('statusTxt').textContent = `Streaming… ~${tokens.toLocaleString()} tokens`;
   }
 
   function setBusy(on) {
