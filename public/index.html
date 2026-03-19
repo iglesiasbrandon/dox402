@@ -2075,8 +2075,7 @@ POST   /documents/reindex re-upsert all document vectors
   }
 
   function updateStreamCount(charCount) {
-    const tokens = Math.ceil(charCount / 4);
-    document.getElementById('statusTxt').textContent = `Streaming… ~${tokens.toLocaleString()} tokens`;
+    document.getElementById('statusTxt').textContent = `Streaming… ${charCount.toLocaleString()} chars`;
   }
 
   function showRetryButton(prompt, model) {
