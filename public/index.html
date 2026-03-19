@@ -1518,6 +1518,7 @@ POST   /documents/reindex re-upsert all document vectors
         const body = await res.json().catch(() => ({}));
         showErr(body.error || `Server error ${res.status}`);
         setBusy(false);
+        showRetryButton(prompt, model);
         return;
       }
 
@@ -1563,6 +1564,7 @@ POST   /documents/reindex re-upsert all document vectors
       showErr('Request failed: ' + e.message);
       setStreaming(false);
       setBusy(false);
+      showRetryButton(prompt, model);
     }
   }
 
@@ -2077,6 +2079,27 @@ POST   /documents/reindex re-upsert all document vectors
     document.getElementById('statusTxt').textContent = `Streaming… ~${tokens.toLocaleString()} tokens`;
   }
 
+  function showRetryButton(prompt, model) {
+    const existing = document.getElementById('retryBar');
+    if (existing) existing.remove();
+    const bar = document.createElement('div');
+    bar.id = 'retryBar';
+    bar.style.cssText = 'text-align:center;margin-top:8px';
+    const btn = document.createElement('button');
+    btn.className = 'btn-ghost';
+    btn.textContent = 'Retry ↻';
+    btn.style.cssText = 'color:var(--accent);border-color:var(--accent)';
+    btn.addEventListener('click', () => {
+      bar.remove();
+      hideErr();
+      setBusy(true);
+      document.getElementById('modelSelect').value = model;
+      doInfer(prompt, null, model);
+    });
+    bar.appendChild(btn);
+    document.getElementById('err').insertAdjacentElement('afterend', bar);
+  }
+
   function setBusy(on) {
     const btn = document.getElementById('sendBtn');
     btn.disabled = on;
@@ -2089,7 +2112,11 @@ POST   /documents/reindex re-upsert all document vectors
     e.classList.add('on');
   }
 
-  function hideErr() { document.getElementById('err').classList.remove('on'); }
+  function hideErr() {
+    document.getElementById('err').classList.remove('on');
+    const retry = document.getElementById('retryBar');
+    if (retry) retry.remove();
+  }
 
   function copyAddr() {
     navigator.clipboard.writeText(document.getElementById('payAddr').textContent);
