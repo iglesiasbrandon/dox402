@@ -41,7 +41,7 @@ After login via either method, all authenticated endpoints use the `ig_session` 
 | GET | /auth/nonce | None | Generate one-time nonce (query: `wallet`) |
 | POST | /auth/login | None | Verify SIWE signature, set session cookie |
 | POST | /auth/logout | Cookie | Clear session cookie |
-| POST | /infer | Cookie/SIWX | AI inference (SSE stream) |
+| POST | /infer | Cookie/SIWX | AI inference (SSE stream, optional `systemPrompt`) |
 | POST | /deposit | Cookie | Top up balance with payment proof |
 | GET | /balance | Cookie | Token balance and usage stats |
 | GET | /history | Cookie | Conversation messages |
@@ -116,7 +116,7 @@ Upload text documents to create a per-wallet knowledge base. Documents are chunk
 
 **Delete:** `DELETE /documents/:id` removes the document and its Vectorize embeddings.
 
-**Supported file types (UI):** `.txt`, `.md`, `.csv`, `.json`, `.html` — read client-side, sent as plain text.
+**Supported file types (UI):** `.pdf`, `.docx`, `.txt`, `.md`, `.csv`, `.json`, `.html` — parsed client-side (pdf.js for PDFs, mammoth.js for DOCX), sent as plain text.
 
 ## Machine-Readable Specs
 

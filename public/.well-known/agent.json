@@ -48,7 +48,7 @@
     {
       "id": "rag",
       "name": "Document Knowledge Base (RAG)",
-      "description": "Upload text documents (.txt, .md, .csv, .json, .html) to create a per-wallet knowledge base. Documents are chunked, embedded, and stored in Vectorize. Enable useRag on inference to inject relevant context. Max 50 docs, 100KB each. Total input validated against model context window.",
+      "description": "Upload documents (.pdf, .docx, .txt, .md, .csv, .json, .html) to create a per-wallet knowledge base. Documents are parsed client-side (pdf.js for PDFs, mammoth.js for DOCX), chunked, embedded, and stored in Vectorize. Enable useRag on inference to inject relevant context. Optional systemPrompt for persistent instructions. Max 50 docs, 100KB each.",
       "inputModes": ["application/json"],
       "outputModes": ["application/json"]
     }

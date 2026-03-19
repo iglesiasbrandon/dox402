@@ -49,7 +49,8 @@
             "walletAddress": "$walletAddress",
             "model": "$model",
             "maxTokens": "$maxTokens",
-            "useRag": "$useRag"
+            "useRag": "$useRag",
+            "systemPrompt": "$systemPrompt"
           },
           "description": "Returns 200 with SSE stream if balance > 0. Returns 402 with payment instructions if balance is zero."
         }
