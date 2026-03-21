@@ -233,10 +233,10 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
         return Response.json({ error: err.error || 'Nonce verification failed' }, { status: 401 });
       }
 
-      // Issue session token — set as HttpOnly cookie, don't expose in body
+      // Issue session token — set as HttpOnly cookie AND return in body for API clients
       const { token, expiresAt } = await createSessionToken(wallet, env.SESSION_SECRET);
       const cookie = buildSessionCookie(token, TOKEN_EXPIRY_SECS, isSecureOrigin(url));
-      return Response.json({ expiresAt }, {
+      return Response.json({ token, expiresAt }, {
         headers: { 'Cache-Control': 'no-store', 'Set-Cookie': cookie },
       });
     }
@@ -432,8 +432,9 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
 
       // Route to the authenticated wallet's DO via RPC
       const paymentSig = request.headers.get('PAYMENT-SIGNATURE');
+      const acceptJson = request.headers.get('Accept')?.includes('application/json') ?? false;
       const stub = getTypedStub(env, authWallet);
-      const doResponse = await stub.handleInfer(body, paymentSig, url.hostname, authWallet);
+      const doResponse = await stub.handleInfer(body, paymentSig, url.hostname, authWallet, acceptJson);
 
       // If 402 returned, augment with SIWX extension so clients can discover auth
       if (doResponse.status === 402) {

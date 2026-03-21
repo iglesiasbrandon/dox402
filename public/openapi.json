@@ -106,7 +106,7 @@
       "post": {
         "summary": "Verify SIWE signature and issue session",
         "operationId": "postAuthLogin",
-        "description": "Step 2 of authentication: submit the signed EIP-4361 message. On success, sets an HttpOnly session cookie (ig_session) and returns the token expiry. The token is valid for 24 hours.",
+        "description": "Step 2 of authentication: submit the signed EIP-4361 message. On success, returns {token, expiresAt} in the response body and sets an HttpOnly session cookie (ig_session). Use the token as Authorization: Bearer <token> for API access. The token is valid for 24 hours.",
         "requestBody": {
           "required": true,
           "content": {
@@ -130,7 +130,7 @@
         },
         "responses": {
           "200": {
-            "description": "Authentication successful. Session token set as HttpOnly cookie.",
+            "description": "Authentication successful. JWT returned in body and set as HttpOnly cookie.",
             "headers": {
               "Set-Cookie": {
                 "description": "HttpOnly session cookie (ig_session=JWT; HttpOnly; SameSite=Strict; Secure; Path=/)",
@@ -141,8 +141,12 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["expiresAt"],
+                  "required": ["token", "expiresAt"],
                   "properties": {
+                    "token": {
+                      "type": "string",
+                      "description": "JWT session token for Authorization: Bearer header"
+                    },
                     "expiresAt": {
                       "type": "integer",
                       "description": "Token expiry as Unix timestamp (seconds)"
@@ -201,9 +205,9 @@
     },
     "/infer": {
       "post": {
-        "summary": "Run AI inference (streamed)",
+        "summary": "Run AI inference",
         "operationId": "postInfer",
-        "description": "Submit a prompt for AI text generation. Returns a Server-Sent Events stream with heartbeat keepalive (:keepalive comments every 15s of inactivity) and a 2-minute max-duration guard. Requires authentication and a positive token balance. If balance is zero and no payment proof is provided, returns 402 with payment instructions and SIWX extension for auth discovery.",
+        "description": "Submit a prompt for AI text generation. Supports two response modes: set Accept: application/json for a synchronous JSON response (recommended for agents), or Accept: text/event-stream (default) for SSE streaming with heartbeat keepalive. Requires authentication and a positive token balance. If balance is zero and no payment proof is provided, returns 402 with payment instructions.",
         "security": [
           { "BearerAuth": [] },
           { "CookieAuth": [] },
@@ -219,6 +223,13 @@
         },
         "parameters": [
           {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "description": "Set to 'application/json' for synchronous JSON response (recommended for agents). Defaults to SSE stream if omitted.",
+            "schema": { "type": "string", "enum": ["application/json", "text/event-stream"] }
+          },
+          {
             "name": "PAYMENT-SIGNATURE",
             "in": "header",
             "required": false,
@@ -228,7 +239,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Inference stream (SSE). Includes :keepalive comments during idle periods and data: [DONE] at stream end.",
+            "description": "Inference response. Content type depends on Accept header: application/json for synchronous response, text/event-stream for SSE.",
             "headers": {
               "Set-Cookie": {
                 "description": "Session cookie (only present when authenticated via SIWX header)",
@@ -244,6 +255,26 @@
               }
             },
             "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Synchronous JSON response (when Accept: application/json)",
+                  "properties": {
+                    "response": { "type": "string", "description": "Complete generated text" },
+                    "usage": {
+                      "type": "object",
+                      "nullable": true,
+                      "properties": {
+                        "prompt_tokens": { "type": "integer" },
+                        "completion_tokens": { "type": "integer" }
+                      }
+                    },
+                    "cost": { "type": "integer", "description": "Tokens charged for this request (1 token = 1 µUSDC)" },
+                    "model": { "type": "string", "description": "Workers AI model ID used" },
+                    "balance": { "type": "integer", "description": "Updated token balance after deduction" }
+                  }
+                }
+              },
               "text/event-stream": {
                 "schema": {
                   "type": "string",
@@ -393,7 +424,7 @@
           "404": { "description": "Document not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
         }
       }
-    },
+    }
   },
   "components": {
     "securitySchemes": {

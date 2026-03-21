@@ -9,28 +9,37 @@ Base URL: `https://inference-gate.iglesias-brandon.workers.dev`
 
 ## What This Service Does
 
-A payment-gated AI inference API built on Cloudflare Workers and Durable Objects. No signup, no API key -- authenticate with your Ethereum wallet, pay with USDC on Base Mainnet, and get streamed AI responses. Each wallet gets isolated token balance, conversation history, and rate limiting via per-wallet Durable Objects with embedded SQLite storage.
+A payment-gated AI inference API built on Cloudflare Workers and Durable Objects. No signup, no API key -- authenticate with your Ethereum wallet, pay with USDC on Base Mainnet, and get AI responses. Each wallet gets isolated token balance, conversation history, and rate limiting via per-wallet Durable Objects with embedded SQLite storage.
 
-## Quick Start
+## Quick Start (for Agents)
 
 1. **Get a nonce:** `GET /auth/nonce?wallet=0xYOUR_ADDRESS`
 2. **Sign:** Construct an EIP-4361 (SIWE) message with the nonce, sign with `personal_sign`
-3. **Login:** `POST /auth/login` with `{message, signature}` -- session cookie set automatically (24h)
-4. **Check balance:** `GET /balance` (cookie-based auth)
-5. **Infer:** `POST /infer` with `{prompt, walletAddress}` -- if balance is 0, you get a 402 with payment instructions
+3. **Login:** `POST /auth/login` with `{message, signature}` -- returns `{token, expiresAt}` in response body
+4. **Infer:** `POST /infer` with `Authorization: Bearer <token>` and `Accept: application/json` for synchronous JSON response, or omit Accept header for SSE streaming
+5. **Handle 402:** If balance is zero, you get a 402 with payment instructions. Send USDC, construct a proof, and retry.
 
 ## Authentication
 
-Three methods:
+Three methods, ordered by agent preference:
 
-**SIWE (recommended for repeated use):**
-Request a nonce, sign an EIP-4361 message, POST to /auth/login. The server sets an HttpOnly `ig_session` cookie valid for 24 hours. All subsequent requests are authenticated via this cookie automatically.
+**1. Bearer Token (recommended for agents):**
+POST to `/auth/login` with a signed SIWE message. The response body contains `{token, expiresAt}`. Use the token as `Authorization: Bearer <token>` on all subsequent requests. Token is valid for 24 hours.
 
-**SIWX (single-request, for x402 clients):**
-Include a `SIGN-IN-WITH-X` header with a base64-encoded payload containing {message, signature, chainId, type, address}. The server returns a session cookie in the `Set-Cookie` header for subsequent requests.
+**2. SIWX (single-request, stateless):**
+Include a `SIGN-IN-WITH-X` header with a base64-encoded payload containing `{message, signature, chainId, type, address}`. Authenticates a single request without a separate login step. The server returns a session cookie and `X-Session-Expires` header for subsequent requests.
 
-**Cookie-based sessions:**
-After login via either method, all authenticated endpoints use the `ig_session` HttpOnly cookie. No Bearer token or Authorization header needed.
+**3. Cookie (browser clients):**
+After login via either method, the server also sets an `ig_session` HttpOnly cookie. Browser clients use this automatically.
+
+## Response Modes
+
+**`POST /infer`** supports two output modes via the `Accept` header:
+
+| Accept Header | Response | Best For |
+|--------------|----------|----------|
+| `application/json` | Single JSON object: `{response, usage, cost, model, balance}` | Agents, API clients |
+| `text/event-stream` (or omitted) | SSE stream with heartbeat keepalive | Browsers, real-time UI |
 
 ## Endpoints
 
@@ -39,17 +48,17 @@ After login via either method, all authenticated endpoints use the `ig_session` 
 | GET | /health | None | Liveness probe |
 | GET | /payment-info | None | Payment address, network, USDC contract |
 | GET | /auth/nonce | None | Generate one-time nonce (query: `wallet`) |
-| POST | /auth/login | None | Verify SIWE signature, set session cookie |
-| POST | /auth/logout | Cookie | Clear session cookie |
-| POST | /infer | Cookie/SIWX | AI inference (SSE stream, optional `systemPrompt`) |
-| POST | /deposit | Cookie | Top up balance with payment proof |
-| GET | /balance | Cookie | Token balance and usage stats |
-| GET | /history | Cookie | Conversation messages |
-| DELETE | /history | Cookie | Clear conversation |
-| POST | /documents | Cookie | Upload document for RAG (embedding deducted from balance) |
-| GET | /documents | Cookie | List uploaded documents |
-| DELETE | /documents/:id | Cookie | Delete document + embeddings |
-| POST | /documents/reindex | Cookie | Re-upsert all document vectors |
+| POST | /auth/login | None | Verify SIWE signature, returns `{token, expiresAt}` + sets cookie |
+| POST | /auth/logout | Bearer/Cookie | Clear session cookie |
+| POST | /infer | Bearer/Cookie/SIWX | AI inference (JSON or SSE, see Accept header) |
+| POST | /deposit | Bearer/Cookie | Top up balance with payment proof |
+| GET | /balance | Bearer/Cookie | Token balance and usage stats |
+| GET | /history | Bearer/Cookie | Conversation messages |
+| DELETE | /history | Bearer/Cookie | Clear conversation |
+| POST | /documents | Bearer/Cookie | Upload document for RAG |
+| GET | /documents | Bearer/Cookie | List uploaded documents |
+| DELETE | /documents/:id | Bearer/Cookie | Delete document + embeddings |
+| POST | /documents/reindex | Bearer/Cookie | Re-upsert all document vectors |
 
 ## Models
 
@@ -81,29 +90,84 @@ The signature is `personal_sign` over: `dox402 payment proof\ntxHash: ...\nfrom:
 
 60 requests per minute per wallet. Exceeding returns 429 with `Retry-After` header.
 
-## Example: Authenticate and Infer
+## Agent Integration Guide
+
+### Python: Full Autonomous Flow
+
+```python
+import requests
+from eth_account import Account
+from eth_account.messages import encode_defunct
+import json, base64, time
+
+BASE = "https://inference-gate.iglesias-brandon.workers.dev"
+PRIVATE_KEY = "0x..."  # Agent's private key
+WALLET = Account.from_key(PRIVATE_KEY).address
+
+# 1. Get nonce
+nonce = requests.get(f"{BASE}/auth/nonce?wallet={WALLET}").json()["nonce"]
+
+# 2. Construct & sign SIWE message
+now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+message = (
+    f"inference-gate.iglesias-brandon.workers.dev wants you to sign in with your Ethereum account:\n"
+    f"{WALLET}\n\n"
+    f"Sign in to dox402 inference gateway\n\n"
+    f"URI: https://inference-gate.iglesias-brandon.workers.dev\n"
+    f"Version: 1\n"
+    f"Chain ID: 8453\n"
+    f"Nonce: {nonce}\n"
+    f"Issued At: {now}"
+)
+sig = Account.sign_message(encode_defunct(text=message), PRIVATE_KEY).signature.hex()
+
+# 3. Login — get Bearer token from response body
+login = requests.post(f"{BASE}/auth/login", json={"message": message, "signature": f"0x{sig}"})
+token = login.json()["token"]
+headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+# 4. Infer (synchronous JSON response)
+resp = requests.post(f"{BASE}/infer", headers=headers, json={
+    "prompt": "What is x402?",
+    "walletAddress": WALLET,
+})
+
+if resp.status_code == 200:
+    data = resp.json()
+    print(data["response"])         # AI-generated text
+    print(f"Cost: {data['cost']} tokens, Balance: {data['balance']}")
+elif resp.status_code == 402:
+    print("Need to pay — see resp.json() for payment instructions")
+```
+
+### curl: Bearer Token + JSON Response
 
 ```bash
-# 1. Get nonce
-NONCE=$(curl -s 'https://inference-gate.iglesias-brandon.workers.dev/auth/nonce?wallet=0xYOUR_WALLET' | jq -r .nonce)
-
-# 2. Sign the SIWE message with your wallet (app-specific)
-
-# 3. Login (cookie is set automatically via Set-Cookie header)
-curl -s -c cookies.txt -X POST https://inference-gate.iglesias-brandon.workers.dev/auth/login \
+# Login and extract token
+TOKEN=$(curl -s -X POST $BASE/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"message":"...signed SIWE message...","signature":"0x..."}'
+  -d '{"message":"...","signature":"0x..."}' | jq -r .token)
 
-# 4. Check balance
-curl -s -b cookies.txt https://inference-gate.iglesias-brandon.workers.dev/balance
+# Infer with JSON response (not SSE)
+curl -s -X POST $BASE/infer \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Hello","walletAddress":"0x..."}'
+```
 
-# 5. Run inference (streamed SSE response)
-curl -N -b cookies.txt -X POST https://inference-gate.iglesias-brandon.workers.dev/infer \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt":"Explain x402 in one sentence","walletAddress":"0xYOUR_WALLET"}'
+### JSON Response Format
 
-# 6. Logout
-curl -s -b cookies.txt -X POST https://inference-gate.iglesias-brandon.workers.dev/auth/logout
+When using `Accept: application/json`, `/infer` returns:
+
+```json
+{
+  "response": "The generated text...",
+  "usage": { "prompt_tokens": 42, "completion_tokens": 128 },
+  "cost": 9,
+  "model": "@cf/meta/llama-3.1-8b-instruct",
+  "balance": 99991
+}
 ```
 
 ## RAG (Retrieval-Augmented Generation)

@@ -37,7 +37,7 @@
     },
     {
       "name": "infer",
-      "description": "Run AI text generation. Returns an SSE stream. Requires authentication and a positive token balance.",
+      "description": "Run AI text generation (SSE streaming). Requires authentication and a positive token balance.",
       "requires": ["authenticate"],
       "steps": [
         {
@@ -53,6 +53,36 @@
             "systemPrompt": "$systemPrompt"
           },
           "description": "Returns 200 with SSE stream if balance > 0. Returns 402 with payment instructions if balance is zero."
+        }
+      ]
+    },
+    {
+      "name": "infer-json",
+      "description": "Run AI text generation with synchronous JSON response (recommended for agents). Set Accept: application/json to get {response, usage, cost, model, balance} instead of SSE.",
+      "requires": ["authenticate"],
+      "steps": [
+        {
+          "endpoint": "/infer",
+          "method": "POST",
+          "headers": {
+            "Authorization": "Bearer $token",
+            "Accept": "application/json"
+          },
+          "body": {
+            "prompt": "$prompt",
+            "walletAddress": "$walletAddress",
+            "model": "$model",
+            "maxTokens": "$maxTokens",
+            "useRag": "$useRag",
+            "systemPrompt": "$systemPrompt"
+          },
+          "output": {
+            "response": "$.response",
+            "cost": "$.cost",
+            "balance": "$.balance",
+            "model": "$.model"
+          },
+          "description": "Returns 200 with JSON if balance > 0. Returns 402 with payment instructions if balance is zero."
         }
       ]
     },

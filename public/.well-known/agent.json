@@ -12,7 +12,7 @@
   },
   "authentication": {
     "schemes": ["bearer"],
-    "instructions": "1. GET /auth/nonce?wallet=0xYOUR_ADDRESS to get a one-time nonce. 2. Construct an EIP-4361 (SIWE) message containing the nonce and sign it with personal_sign. 3. POST /auth/login with {message, signature} to receive a JWT session token (valid 24h). Alternative: pass a SIGN-IN-WITH-X header (base64-encoded SiwxPayload) on POST /infer for single-request auth without a separate login step."
+    "instructions": "1. GET /auth/nonce?wallet=0xYOUR_ADDRESS to get a one-time nonce. 2. Construct an EIP-4361 (SIWE) message containing the nonce and sign it with personal_sign. 3. POST /auth/login with {message, signature} — response body contains {token, expiresAt}. 4. Use Authorization: Bearer <token> on all subsequent requests. Alternative: pass a SIGN-IN-WITH-X header (base64-encoded SiwxPayload) on POST /infer for single-request stateless auth."
   },
   "defaultInputModes": ["application/json"],
   "defaultOutputModes": ["text/event-stream", "application/json"],
@@ -20,9 +20,9 @@
     {
       "id": "infer",
       "name": "AI Inference",
-      "description": "Run AI text generation with conversation memory. Supports Llama 3.1 8B, Llama 3.3 70B, Gemma 3 12B, Mistral 7B, DeepSeek R1 32B. Returns SSE stream. Costs ~8-13 tokens per request depending on model and length.",
+      "description": "Run AI text generation with conversation memory. Supports Llama 3.1 8B, Llama 3.3 70B, Gemma 3 12B, Mistral 7B, DeepSeek R1 32B. Set Accept: application/json for synchronous JSON response, or text/event-stream for SSE. Costs ~8-13 tokens per request depending on model and length.",
       "inputModes": ["application/json"],
-      "outputModes": ["text/event-stream"]
+      "outputModes": ["application/json", "text/event-stream"]
     },
     {
       "id": "deposit",

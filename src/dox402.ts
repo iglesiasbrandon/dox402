@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { build402Response, verifyProof } from './x402';
-import { runInference } from './ai';
+import { runInference, runInferenceSync } from './ai';
 import {
   AI_MODEL, MAX_HISTORY_MESSAGES, MAX_PROMPT_LENGTH, PAYMENT_MICRO_USDC, RATE_LIMIT_PER_MINUTE,
   GRACE_MAX_PROVISIONAL_MICRO_USDC, GRACE_MAX_PENDING, GRACE_INITIAL_RETRY_MS, GRACE_MAX_RETRIES,
@@ -230,6 +230,7 @@ export class InferenceGate extends DurableObject<Env> {
     paymentSignature: string | null,
     hostname: string,
     wallet: string,
+    acceptJson = false,
   ): Promise<Response> {
     // Defense-in-depth: verify wallet matches DO identity (router already validates, but DO must self-check)
     if (this.wallet && wallet.toLowerCase() !== this.wallet.toLowerCase()) {
@@ -354,7 +355,9 @@ export class InferenceGate extends DurableObject<Env> {
 
     // Step 3: No proof but has balance → run inference (cost deducted post-stream)
     if (!paymentSignature) {
-      return this.inferAndLog(body, balance, messages, false, ragCost, ragStatus);
+      return acceptJson
+        ? this.inferAndLogSync(body, balance, messages, false, ragCost, ragStatus)
+        : this.inferAndLog(body, balance, messages, false, ragCost, ragStatus);
     }
 
     // Step 4: Parse and validate the proof from the payment signature
@@ -463,7 +466,9 @@ export class InferenceGate extends DurableObject<Env> {
     }
 
     // Step 9: Run inference (balance deducted async after stream)
-    return this.inferAndLog(body, newBalance, messages, isProvisional, ragCost, ragStatus);
+    return acceptJson
+      ? this.inferAndLogSync(body, newBalance, messages, isProvisional, ragCost, ragStatus)
+      : this.inferAndLog(body, newBalance, messages, isProvisional, ragCost, ragStatus);
   }
 
   private async inferAndLog(body: InferRequest, balance: number, messages: ConversationMessage[], provisional = false, ragCostMicroUSDC = 0, ragStatus: 'injected' | 'fallback' | 'failed' | 'off' = 'off'): Promise<Response> {
@@ -640,6 +645,113 @@ export class InferenceGate extends DurableObject<Env> {
         ...(provisional ? { 'X-Payment-Status': 'provisional' } : {}),
         ...(ragStatus !== 'off' ? { 'X-RAG-Status': ragStatus } : {}),
       },
+    });
+  }
+
+  /** Synchronous (non-streaming) inference for agent clients requesting Accept: application/json.
+   *  Returns a single JSON response with { response, usage, cost, model }. */
+  private async inferAndLogSync(
+    body: InferRequest,
+    balance: number,
+    messages: ConversationMessage[],
+    provisional = false,
+    ragCostMicroUSDC = 0,
+    ragStatus: 'injected' | 'fallback' | 'failed' | 'off' = 'off',
+  ): Promise<Response> {
+    const startTime = Date.now();
+
+    let result: { response: string; usage?: { prompt_tokens: number; completion_tokens: number } };
+    try {
+      result = await runInferenceSync(this.env, messages, body.maxTokens, body.model);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[InferenceGate] AI inference (sync) failed:', msg);
+      this.sql.exec(
+        `UPDATE wallet_state SET last_used_at = ?,
+         total_requests = total_requests + 1,
+         total_failed_requests = total_failed_requests + 1
+         WHERE id = 1`,
+        Date.now(),
+      );
+      return Response.json({ error: `Inference failed: ${msg}` }, { status: 502 });
+    }
+
+    const responseText = result.response || '';
+    const usage = result.usage ?? null;
+
+    // Validate inference result before billing
+    const validation = validateInferenceResult({ text: responseText, usage });
+    if (!validation.ok) {
+      console.error(`[InferenceGate] Sync: skipping billing: ${validation.reason}`);
+      this.sql.exec(
+        `UPDATE wallet_state SET last_used_at = ?,
+         total_requests = total_requests + 1,
+         total_failed_requests = total_failed_requests + 1
+         WHERE id = 1`,
+        Date.now(),
+      );
+      this.emitAnalytics('inference', {
+        blobs: [this.walletAddress, body.model ?? AI_MODEL, `error:${validation.reason}`],
+        doubles: [0, Date.now() - startTime, 0, 0, 0],
+      });
+      return Response.json({ error: `Inference failed: ${validation.reason}` }, { status: 502 });
+    }
+
+    // Compute cost (same logic as streaming path)
+    const inputChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+    const outputChars = responseText.length;
+    const cost = computeCostMicroUSDC(usage, body.model ?? AI_MODEL, { inputChars, outputChars }) + ragCostMicroUSDC;
+
+    // Deduct from balance
+    this.sql.exec(
+      `UPDATE wallet_state SET
+       balance = MAX(0, balance - ?),
+       total_spent = total_spent + ?,
+       last_used_at = ?,
+       total_requests = total_requests + 1
+       WHERE id = 1`,
+      cost, cost, Date.now(),
+    );
+
+    // Analytics
+    const usedFallbackBilling = !usage?.prompt_tokens && !usage?.completion_tokens;
+    this.emitAnalytics('inference', {
+      blobs: [this.walletAddress, body.model ?? AI_MODEL, 'ok', usedFallbackBilling ? 'char_fallback' : 'token_count'],
+      doubles: [cost, Date.now() - startTime, usage?.prompt_tokens || 0, usage?.completion_tokens || 0, ragCostMicroUSDC],
+    });
+
+    // Append to history
+    if (responseText) {
+      const now = Date.now();
+      this.sql.exec(
+        'INSERT INTO history (role, content, cost, model, created_at) VALUES (?, ?, ?, ?, ?)',
+        'user', body.prompt, null, null, now,
+      );
+      this.sql.exec(
+        'INSERT INTO history (role, content, cost, model, created_at) VALUES (?, ?, ?, ?, ?)',
+        'assistant', responseText, cost, body.model ?? AI_MODEL, now + 1,
+      );
+      this.sql.exec(
+        `DELETE FROM history WHERE id NOT IN (
+          SELECT id FROM history ORDER BY id DESC LIMIT ?
+        )`,
+        MAX_HISTORY_MESSAGES,
+      );
+    }
+
+    // Read updated balance
+    const updatedRow = this.requireRow(this.sql.exec<{ balance: number }>(
+      'SELECT balance FROM wallet_state WHERE id = 1',
+    ), 'wallet_state row missing');
+
+    return Response.json({
+      response: responseText,
+      usage: usage ? { prompt_tokens: usage.prompt_tokens, completion_tokens: usage.completion_tokens } : null,
+      cost,
+      model: body.model ?? AI_MODEL,
+      balance: updatedRow.balance,
+      ...(provisional ? { paymentStatus: 'provisional' } : {}),
+      ...(ragStatus !== 'off' ? { ragStatus } : {}),
     });
   }
 

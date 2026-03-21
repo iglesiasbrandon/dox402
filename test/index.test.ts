@@ -583,9 +583,10 @@ describe('/auth/login cookie', () => {
     expect(setCookie).toContain('Secure');
     expect(setCookie).toContain('Path=/');
 
-    // Response body should NOT contain token
+    // Response body should contain token (for API/agent clients) and expiresAt
     const body = await res.json() as Record<string, any>;
-    expect(body.token).toBeUndefined();
+    expect(body.token).toBeDefined();
+    expect(typeof body.token).toBe('string');
     expect(body.expiresAt).toBeDefined();
   });
 });

@@ -26,3 +26,28 @@ export async function runInference(
   );
   return response as unknown as ReadableStream;
 }
+
+/** Non-streaming inference — returns the complete response as a single object.
+ *  Used when agents request `Accept: application/json` instead of SSE. */
+export async function runInferenceSync(
+  env: Env,
+  messages: ConversationMessage[],
+  maxTokens: number = 512,
+  model?: string,
+): Promise<{ response: string; usage?: { prompt_tokens: number; completion_tokens: number } }> {
+  const selectedModel = (model && model in ALLOWED_MODELS) ? model : AI_MODEL;
+  const clampedTokens = Math.max(1, Math.min(maxTokens, MAX_TOKENS_LIMIT));
+
+  const result = await env.AI.run(
+    selectedModel as Parameters<Ai['run']>[0],
+    {
+      messages: messages as AiTextGenerationInput['messages'],
+      max_tokens: clampedTokens,
+      stream: false,
+    } as AiTextGenerationInput,
+    {
+      gateway: { id: 'dox402-gateway' },
+    },
+  );
+  return result as unknown as { response: string; usage?: { prompt_tokens: number; completion_tokens: number } };
+}
