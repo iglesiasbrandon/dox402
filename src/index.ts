@@ -214,14 +214,15 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
     }
 
     // ── Homepage with Link headers ───────────────────────────────────────
-    // Intercept GET / when the client wants HTML so we can attach RFC 8288
-    // Link headers pointing at machine-readable specs. All other asset paths
-    // (openapi.json, robots.txt, sitemap.xml, etc.) fall through to Cloudflare
-    // Workers Assets via the platform's normal asset-first routing.
+    // Intercept GET / (and /index.html) for any non-markdown request so we
+    // can proxy to Workers Assets and attach RFC 8288 Link headers pointing
+    // at machine-readable specs. Because `run_worker_first` in wrangler.toml
+    // forces the Worker to handle these paths first, we MUST proxy to ASSETS
+    // here — otherwise clients that send `Accept: */*` (scanners, curl) would
+    // get a 404 from the catch-all below.
     if (
       (url.pathname === '/' || url.pathname === '/index.html') &&
       request.method === 'GET' &&
-      (request.headers.get('Accept')?.includes('text/html') ?? false) &&
       env.ASSETS
     ) {
       const assetResponse = await env.ASSETS.fetch(request);
