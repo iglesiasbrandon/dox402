@@ -112,6 +112,34 @@ x402-compatible clients can skip the nonce/login flow and pass a `SIGN-IN-WITH-X
 
 ---
 
+## Agent Discovery
+
+dox402 publishes machine-readable specs so AI agents can discover and use the API without out-of-band configuration.
+
+### Discovery endpoints
+| Endpoint | Description |
+|---|---|
+| `GET /openapi.json` | OpenAPI 3.1 specification of every REST endpoint |
+| `GET /SKILL.md` | Agent-readable usage guide |
+| `GET /.well-known/agent.json` | A2A agent card (identity, transport, skill) |
+| `GET /.well-known/agents.json` | Multi-step flows (login, infer, balance, etc.) |
+| `GET /.well-known/api-catalog` | RFC 9727 linkset (`application/linkset+json`) pointing to OpenAPI / SKILL.md / health |
+| `GET /.well-known/agent-skills/index.json` | Cloudflare Agent Skills Discovery v0.2.0 index |
+| `GET /robots.txt` | Crawl rules + AI bot policies + Content Signals (`ai-train=no, search=yes, ai-input=yes`) |
+| `GET /sitemap.xml` | Canonical URLs |
+
+### Content negotiation on `/`
+- `Accept: text/markdown` → returns `SKILL.md` with `Content-Type: text/markdown; charset=utf-8` and `x-markdown-tokens` header (Cloudflare Markdown for Agents).
+- `Accept: text/html` → HTML response includes RFC 8288 `Link` headers advertising `openapi.json`, `agent.json`, `agents.json`, and `SKILL.md`.
+
+### In-browser agents (WebMCP)
+When the homepage loads in a WebMCP-capable browser, it registers 5 tools via `navigator.modelContext.registerTool()`: `connect_wallet`, `get_balance`, `send_inference`, `view_history`, `open_deposit_ui`. No tool auto-spends — deposits still require an explicit user wallet signature.
+
+### What we deliberately don't publish
+See [`public/.well-known/README.md`](public/.well-known/README.md) for the rationale on `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/.well-known/http-message-signatures-directory`, `/.well-known/mcp/server-card.json`, `/.well-known/ucp`, and `/.well-known/acp.json` — none of which fit dox402's architecture (wallet-signed auth, per-call API monetization, no MCP endpoint, no product catalog).
+
+---
+
 ## Models
 
 | Model | Context Window | Speed |

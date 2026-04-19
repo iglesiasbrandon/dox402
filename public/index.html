@@ -785,10 +785,34 @@ GET    /admin/stale                zero-balance inactive wallets
 
       <div class="readme-section">
         <div class="readme-h">Machine-readable specs</div>
-        <pre class="readme-pre"><a href="/openapi.json"><code>GET /openapi.json</code></a>         OpenAPI 3.1 specification
-<a href="/.well-known/agent.json"><code>GET /.well-known/agent.json</code></a>  A2A agent card
-<a href="/.well-known/agents.json"><code>GET /.well-known/agents.json</code></a> Agents.json (multi-step flows)
-<a href="/SKILL.md"><code>GET /SKILL.md</code></a>              Agent-readable markdown</pre>
+        <pre class="readme-pre"><a href="/openapi.json"><code>GET /openapi.json</code></a>                          OpenAPI 3.1 specification
+<a href="/.well-known/agent.json"><code>GET /.well-known/agent.json</code></a>                 A2A agent card
+<a href="/.well-known/agents.json"><code>GET /.well-known/agents.json</code></a>                Agents.json (multi-step flows)
+<a href="/.well-known/api-catalog"><code>GET /.well-known/api-catalog</code></a>                API Catalog (RFC 9727 linkset)
+<a href="/.well-known/agent-skills/index.json"><code>GET /.well-known/agent-skills/index.json</code></a>    Agent Skills index (v0.2.0)
+<a href="/SKILL.md"><code>GET /SKILL.md</code></a>                               Agent-readable markdown
+<a href="/robots.txt"><code>GET /robots.txt</code></a>                             Crawl rules + Content Signals
+<a href="/sitemap.xml"><code>GET /sitemap.xml</code></a>                            Canonical URLs</pre>
+      </div>
+
+      <div class="readme-section">
+        <div class="readme-h">Content negotiation on /</div>
+        <pre class="readme-pre"><code>GET / -H "Accept: text/markdown"</code>     Returns SKILL.md as text/markdown
+<code>GET / -H "Accept: text/html"</code>         HTML response includes RFC 8288 Link headers
+                                     pointing at openapi.json, agent.json, agents.json,
+                                     and SKILL.md for spec discovery</pre>
+      </div>
+
+      <div class="readme-section">
+        <div class="readme-h">In-browser agents (WebMCP)</div>
+        <pre class="readme-pre">When loaded in a WebMCP-capable browser, this page registers tools via
+<code>navigator.modelContext.registerTool()</code>:
+
+  connect_wallet     Trigger SIWE sign-in
+  get_balance        Read current token balance
+  send_inference     Run inference with prompt + optional model
+  view_history       Return conversation history
+  open_deposit_ui    Open the deposit panel (no auto-spend)</pre>
       </div>
 
     </div>
@@ -804,6 +828,7 @@ GET    /admin/stale                zero-balance inactive wallets
       <a href="https://developers.cloudflare.com/workers-ai/" target="_blank">Workers AI</a> ·
       <a href="https://developers.cloudflare.com/workers/" target="_blank">Workers</a> ·
       <a href="https://developers.cloudflare.com/durable-objects/" target="_blank">Durable Objects</a> ·
+      <a href="https://webmachinelearning.github.io/webmcp/" target="_blank">WebMCP</a> ·
       <a href="/openapi.json">OpenAPI</a> ·
       <a href="/SKILL.md">SKILL.md</a>
     </div>
