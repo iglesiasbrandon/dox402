@@ -1,0 +1,25 @@
+{
+  "linkset": [
+    {
+      "anchor": "https://dox402.com/",
+      "service-desc": [
+        {
+          "href": "https://dox402.com/openapi.json",
+          "type": "application/json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://dox402.com/SKILL.md",
+          "type": "text/markdown"
+        }
+      ],
+      "status": [
+        {
+          "href": "https://dox402.com/health",
+          "type": "application/json"
+        }
+      ]
+    }
+  ]
+}

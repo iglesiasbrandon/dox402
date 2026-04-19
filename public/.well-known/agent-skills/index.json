@@ -1,0 +1,12 @@
+{
+  "$schema": "https://agentskills.io/schemas/v0.2.0/index.json",
+  "skills": [
+    {
+      "name": "dox402",
+      "type": "skill",
+      "description": "A payment-gated AI inference API built on Cloudflare Workers and Durable Objects. No signup, no API key -- authenticate with your Ethereum wallet, pay with USDC on Base Mainnet, and get AI responses. Each wallet gets isolated token balance, conversation history, and rate limiting via per-wallet Durable Objects with embedded SQLite storage.",
+      "url": "https://dox402.com/SKILL.md",
+      "sha256": "51c2b1ab2be2b3f90e14f18dd08cf4c5fc76013577c9923a0a4b4fb5e6ce8b44"
+    }
+  ]
+}
