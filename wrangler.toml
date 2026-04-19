@@ -9,6 +9,7 @@ invocation_logs = true
 
 [assets]
 directory = "./public"
+binding = "ASSETS"
 
 [ai]
 binding = "AI"

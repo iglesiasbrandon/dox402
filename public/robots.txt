@@ -1,0 +1,135 @@
+# dox402 — pay-per-use AI inference on Cloudflare Workers
+# https://github.com/iglesiasbrandon/dox402
+#
+# General policy:
+#   - The marketing/docs homepage and machine-readable specs are public.
+#   - Authenticated and admin API endpoints are off-limits to all crawlers
+#     (they require a SIWE session or admin bearer token anyway).
+
+User-agent: *
+Allow: /
+Allow: /openapi.json
+Allow: /SKILL.md
+Allow: /.well-known/agent.json
+Allow: /.well-known/agents.json
+Allow: /sitemap.xml
+Allow: /robots.txt
+Allow: /health
+Allow: /payment-info
+Disallow: /infer
+Disallow: /balance
+Disallow: /history
+Disallow: /documents
+Disallow: /auth/
+Disallow: /admin/
+
+# ── AI / LLM crawler rules ─────────────────────────────────────────────────
+# Permissive on the public docs and machine-readable specs so the project is
+# discoverable by agents and search-grounding bots; off-limits on API endpoints
+# (which gate on payment + signed session anyway).
+
+User-agent: GPTBot
+Allow: /
+Allow: /openapi.json
+Allow: /SKILL.md
+Allow: /.well-known/agent.json
+Allow: /.well-known/agents.json
+Allow: /sitemap.xml
+Disallow: /infer
+Disallow: /balance
+Disallow: /history
+Disallow: /documents
+Disallow: /auth/
+Disallow: /admin/
+
+User-agent: OAI-SearchBot
+Allow: /
+Allow: /openapi.json
+Allow: /SKILL.md
+Allow: /.well-known/agent.json
+Allow: /.well-known/agents.json
+Allow: /sitemap.xml
+Disallow: /infer
+Disallow: /balance
+Disallow: /history
+Disallow: /documents
+Disallow: /auth/
+Disallow: /admin/
+
+User-agent: Claude-Web
+Allow: /
+Allow: /openapi.json
+Allow: /SKILL.md
+Allow: /.well-known/agent.json
+Allow: /.well-known/agents.json
+Allow: /sitemap.xml
+Disallow: /infer
+Disallow: /balance
+Disallow: /history
+Disallow: /documents
+Disallow: /auth/
+Disallow: /admin/
+
+User-agent: ClaudeBot
+Allow: /
+Allow: /openapi.json
+Allow: /SKILL.md
+Allow: /.well-known/agent.json
+Allow: /.well-known/agents.json
+Allow: /sitemap.xml
+Disallow: /infer
+Disallow: /balance
+Disallow: /history
+Disallow: /documents
+Disallow: /auth/
+Disallow: /admin/
+
+User-agent: Google-Extended
+Allow: /
+Allow: /openapi.json
+Allow: /SKILL.md
+Allow: /.well-known/agent.json
+Allow: /.well-known/agents.json
+Allow: /sitemap.xml
+Disallow: /infer
+Disallow: /balance
+Disallow: /history
+Disallow: /documents
+Disallow: /auth/
+Disallow: /admin/
+
+User-agent: PerplexityBot
+Allow: /
+Allow: /openapi.json
+Allow: /SKILL.md
+Allow: /.well-known/agent.json
+Allow: /.well-known/agents.json
+Allow: /sitemap.xml
+Disallow: /infer
+Disallow: /balance
+Disallow: /history
+Disallow: /documents
+Disallow: /auth/
+Disallow: /admin/
+
+User-agent: CCBot
+Allow: /
+Allow: /openapi.json
+Allow: /SKILL.md
+Allow: /.well-known/agent.json
+Allow: /.well-known/agents.json
+Allow: /sitemap.xml
+Disallow: /infer
+Disallow: /balance
+Disallow: /history
+Disallow: /documents
+Disallow: /auth/
+Disallow: /admin/
+
+# Content signals (cloudflare.com/ai-bots/ proposal):
+#   ai-train=no   — do not use this content to train models
+#   search=yes    — OK to surface in search results
+#   ai-input=yes  — OK to use as grounding input for live AI answers
+Content-Signal: ai-train=no, search=yes, ai-input=yes
+
+Sitemap: https://dox402.com/sitemap.xml
