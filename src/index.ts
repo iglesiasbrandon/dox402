@@ -180,6 +180,39 @@ const HOMEPAGE_LINK_HEADER = [
 ].join(', ');
 
 async function handleRequest(request: Request, env: Env, url: URL): Promise<Response> {
+    // ── Markdown for Agents content negotiation ──────────────────────────
+    // When an agent asks for `Accept: text/markdown` on the homepage, serve
+    // SKILL.md instead of the HTML page. Implements Cloudflare's
+    // "Markdown for Agents" pattern so LLM crawlers get clean, token-efficient
+    // content without parsing HTML. HTML clients fall through to the next
+    // homepage interceptor (Link headers) and then to asset serving.
+    // Spec: https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/
+    if (
+      (url.pathname === '/' || url.pathname === '/index.html') &&
+      request.method === 'GET' &&
+      (request.headers.get('Accept')?.toLowerCase().includes('text/markdown') ?? false) &&
+      env.ASSETS
+    ) {
+      const skillResponse = await env.ASSETS.fetch(
+        new Request(new URL('/SKILL.md', request.url)),
+      );
+      if (skillResponse.ok) {
+        const markdown = await skillResponse.text();
+        // Approximate token count using the standard ~4 chars/token heuristic.
+        const approxTokens = Math.ceil(markdown.length / 4);
+        return new Response(markdown, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/markdown; charset=utf-8',
+            'Vary': 'Accept',
+            'x-markdown-tokens': String(approxTokens),
+            'Cache-Control': 'public, max-age=300',
+          },
+        });
+      }
+      // If SKILL.md is missing for some reason, fall through to HTML serving.
+    }
+
     // ── Homepage with Link headers ───────────────────────────────────────
     // Intercept GET / when the client wants HTML so we can attach RFC 8288
     // Link headers pointing at machine-readable specs. All other asset paths

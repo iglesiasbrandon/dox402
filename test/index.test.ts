@@ -137,6 +137,118 @@ function makeMockDONamespace(opts?: {
   };
 }
 
+// ── Markdown for Agents content negotiation ───────────────────────────────────
+
+describe('Markdown for Agents (Accept: text/markdown on /)', () => {
+  function makeMockAssets(skillBody: string, opts?: { ok?: boolean; status?: number }): Fetcher {
+    const ok = opts?.ok ?? true;
+    const status = opts?.status ?? 200;
+    return {
+      fetch: vi.fn(async (input: Request | string) => {
+        const u = typeof input === 'string' ? input : input.url;
+        if (u.endsWith('/SKILL.md')) {
+          return new Response(skillBody, {
+            status,
+            headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+          });
+        }
+        // Default: pretend HTML homepage
+        return new Response('<!doctype html><html><body>home</body></html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        });
+      }),
+    } as unknown as Fetcher;
+  }
+
+  const skillMd = '# dox402 — Pay-Per-Use AI Inference API\n\nBase URL: `https://example.com`\n';
+
+  it('GET / with Accept: text/markdown returns SKILL.md as markdown', async () => {
+    const env = makeEnv({ ASSETS: makeMockAssets(skillMd) });
+    const req = new Request('https://dox402.example.com/', {
+      method: 'GET',
+      headers: { 'Accept': 'text/markdown' },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
+    expect(res.headers.get('Vary')).toBe('Accept');
+    const tokens = res.headers.get('x-markdown-tokens');
+    expect(tokens).toBeTruthy();
+    expect(Number(tokens)).toBeGreaterThan(0);
+    const body = await res.text();
+    expect(body).toContain('# dox402');
+    expect(body).toContain('Base URL');
+  });
+
+  it('GET /index.html with Accept: text/markdown also returns markdown', async () => {
+    const env = makeEnv({ ASSETS: makeMockAssets(skillMd) });
+    const req = new Request('https://dox402.example.com/index.html', {
+      method: 'GET',
+      headers: { 'Accept': 'text/markdown' },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
+  });
+
+  it('GET / with Accept: text/markdown,text/html prefers markdown', async () => {
+    const env = makeEnv({ ASSETS: makeMockAssets(skillMd) });
+    const req = new Request('https://dox402.example.com/', {
+      method: 'GET',
+      headers: { 'Accept': 'text/markdown, text/html;q=0.9' },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
+  });
+
+  it('GET / without Accept: text/markdown falls through (no markdown response)', async () => {
+    const assets = makeMockAssets(skillMd);
+    const env = makeEnv({ ASSETS: assets });
+    const req = new Request('https://dox402.example.com/', {
+      method: 'GET',
+      headers: { 'Accept': 'text/html' },
+    });
+    const res = await worker.fetch(req, env);
+    // Without ASSETS-based homepage interception in this branch, the router
+    // returns 404 for /. The key assertion is that we did NOT switch to markdown.
+    expect(res.headers.get('Content-Type')).not.toBe('text/markdown; charset=utf-8');
+    expect(res.headers.get('x-markdown-tokens')).toBeNull();
+  });
+
+  it('POST / with Accept: text/markdown does not trigger markdown path', async () => {
+    const env = makeEnv({ ASSETS: makeMockAssets(skillMd) });
+    const req = new Request('https://dox402.example.com/', {
+      method: 'POST',
+      headers: { 'Accept': 'text/markdown' },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.headers.get('Content-Type')).not.toBe('text/markdown; charset=utf-8');
+  });
+
+  it('markdown response includes CORS headers via withCors wrapper', async () => {
+    const env = makeEnv({ ASSETS: makeMockAssets(skillMd) });
+    const req = new Request('https://dox402.example.com/', {
+      method: 'GET',
+      headers: { 'Accept': 'text/markdown' },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://dox402.example.com');
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+  });
+
+  it('falls through when SKILL.md fetch fails (asset 404)', async () => {
+    const env = makeEnv({ ASSETS: makeMockAssets(skillMd, { ok: false, status: 404 }) });
+    const req = new Request('https://dox402.example.com/', {
+      method: 'GET',
+      headers: { 'Accept': 'text/markdown' },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.headers.get('Content-Type')).not.toBe('text/markdown; charset=utf-8');
+  });
+});
+
 // ── CORS ──────────────────────────────────────────────────────────────────────
 
 describe('CORS', () => {
