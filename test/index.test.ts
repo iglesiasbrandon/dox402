@@ -356,6 +356,39 @@ describe('Security headers', () => {
   });
 });
 
+// ── /.well-known/api-catalog (RFC 9727) ─────────────────────────────────────
+
+describe('GET /.well-known/api-catalog', () => {
+  function makeAssetsFetcher(body: string, status = 200) {
+    return {
+      fetch: vi.fn(async () => new Response(body, {
+        status,
+        // Cloudflare Static Assets serves extensionless files as octet-stream;
+        // mimic that here so we know the route is overriding it.
+        headers: { 'Content-Type': 'application/octet-stream' },
+      })),
+    } as unknown as Fetcher;
+  }
+
+  it('serves the asset with Content-Type: application/linkset+json', async () => {
+    const linkset = JSON.stringify({ linkset: [{ anchor: 'https://dox402.com/' }] });
+    const env = makeEnv({ ASSETS: makeAssetsFetcher(linkset) });
+    const req = new Request('https://dox402.example.com/.well-known/api-catalog', { method: 'GET' });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('application/linkset+json');
+    const text = await res.text();
+    expect(JSON.parse(text)).toEqual({ linkset: [{ anchor: 'https://dox402.com/' }] });
+  });
+
+  it('returns 404 when the asset layer does not have the file', async () => {
+    const env = makeEnv({ ASSETS: makeAssetsFetcher('Not found', 404) });
+    const req = new Request('https://dox402.example.com/.well-known/api-catalog', { method: 'GET' });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(404);
+  });
+});
+
 // ── SIWX Integration ──────────────────────────────────────────────────────────
 
 describe('SIWX on /infer', () => {

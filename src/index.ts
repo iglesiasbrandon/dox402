@@ -249,6 +249,20 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
       });
     }
 
+    // GET /.well-known/api-catalog — RFC 9727 API Catalog (linkset+json).
+    // Workers Static Assets serves extensionless files as application/octet-stream;
+    // re-serve here with the correct media type so RFC 9727 consumers see it.
+    if (url.pathname === '/.well-known/api-catalog' && request.method === 'GET') {
+      const assetRes = await env.ASSETS.fetch(request);
+      if (!assetRes.ok) {
+        return new Response('Not found', { status: 404 });
+      }
+      const body = await assetRes.arrayBuffer();
+      const headers = new Headers(assetRes.headers);
+      headers.set('Content-Type', 'application/linkset+json');
+      return new Response(body, { status: assetRes.status, headers });
+    }
+
     // GET /payment-info — payment address + network details for client top-up UI
     if (url.pathname === '/payment-info' && request.method === 'GET') {
       return Response.json({
