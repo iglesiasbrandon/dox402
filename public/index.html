@@ -2182,6 +2182,166 @@ GET    /admin/stale                zero-balance inactive wallets
   document.getElementById('exportBtn').addEventListener('click', exportConversation);
   document.getElementById('copyLastBtn').addEventListener('click', copyLast);
   document.getElementById('clearHistoryBtn').addEventListener('click', clearHistory);
+
+  // ── WebMCP: expose site tools to in-browser AI agents ──────────────────────
+  // Spec: https://webmachinelearning.github.io/webmcp/
+  // The browser's agent detects these tools and can invoke them on the user's behalf.
+  // Safety: NO tool auto-spends funds. Deposits open the UI; the user must approve
+  // the on-chain transfer in their wallet. Inference auto-debits the pre-funded token
+  // balance — that is the page's explicit purpose and requires an existing balance.
+  (function registerWebMcpTools() {
+    if (typeof navigator === 'undefined' || !('modelContext' in navigator)) return;
+    const mc = navigator.modelContext;
+    // Support both the spec's registerTool() and the earlier provideContext() shape.
+    const register = (tool) => {
+      try {
+        if (typeof mc.registerTool === 'function') {
+          mc.registerTool(tool);
+        } else if (typeof mc.provideContext === 'function') {
+          mc.provideContext({ tools: [tool] });
+        }
+      } catch (e) {
+        console.warn('WebMCP registration failed for', tool && tool.name, e);
+      }
+    };
+
+    const requireSession = () => {
+      if (!wallet || !isSessionValid()) {
+        return { ok: false, error: 'Not signed in. Call connect_wallet first to sign in with your Ethereum wallet.' };
+      }
+      return { ok: true };
+    };
+
+    register({
+      name: 'connect_wallet',
+      title: 'Connect wallet (Sign-In with Ethereum)',
+      description: 'Opens the user\'s browser wallet to sign in to dox402 via SIWE (EIP-4361). The user must approve the signature in their wallet popup. Required before using balance, history, inference, or deposit tools.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: async () => {
+        if (wallet && isSessionValid()) {
+          return { ok: true, alreadyConnected: true, wallet };
+        }
+        await connectInjected();
+        if (wallet && isSessionValid()) {
+          return { ok: true, wallet };
+        }
+        return { ok: false, error: 'Sign-in did not complete. The user may have cancelled the wallet prompt.' };
+      },
+    });
+
+    register({
+      name: 'get_balance',
+      title: 'Get token balance',
+      description: 'Returns the signed-in user\'s current token balance on dox402 (1 USDC = 1,000,000 tokens). Read-only.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true },
+      execute: async () => {
+        const gate = requireSession();
+        if (!gate.ok) return gate;
+        const tokens = await fetchBalance();
+        if (tokens === null) return { ok: false, error: 'Failed to fetch balance.' };
+        return { ok: true, tokens, wallet };
+      },
+    });
+
+    register({
+      name: 'send_inference',
+      title: 'Send an inference request',
+      description: 'Sends a prompt to a Cloudflare Workers AI model through dox402 and returns the response. Debits the user\'s pre-funded token balance based on input/output tokens. Requires connect_wallet and a positive balance. Does NOT trigger any on-chain transaction.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          prompt:       { type: 'string', description: 'The user prompt to send to the model.' },
+          model:        { type: 'string', description: 'Optional Workers AI model id (e.g. "@cf/meta/llama-3.1-8b-instruct"). Defaults to the UI-selected model.' },
+          systemPrompt: { type: 'string', description: 'Optional system prompt to prepend.' },
+          useRag:       { type: 'boolean', description: 'If true and documents are uploaded, retrieve relevant chunks and inject them. Defaults to the UI toggle state.' },
+        },
+        required: ['prompt'],
+        additionalProperties: false,
+      },
+      execute: async (input) => {
+        const gate = requireSession();
+        if (!gate.ok) return gate;
+        const prompt = (input && typeof input.prompt === 'string') ? input.prompt.trim() : '';
+        if (!prompt) return { ok: false, error: 'prompt is required and must be a non-empty string.' };
+
+        const modelSelect = document.getElementById('modelSelect');
+        const model = (input && input.model) || modelSelect.value;
+        if (input && input.model && Array.from(modelSelect.options).some(o => o.value === input.model)) {
+          modelSelect.value = input.model;
+        }
+        if (input && typeof input.systemPrompt === 'string') {
+          document.getElementById('sysPromptIn').value = input.systemPrompt;
+        }
+        if (input && typeof input.useRag === 'boolean') {
+          const rt = document.getElementById('ragToggle');
+          if (rt && !rt.disabled) rt.checked = input.useRag;
+        }
+        document.getElementById('promptIn').value = prompt;
+        updateEstimate();
+        pendingPrompt = prompt;
+        pendingModel  = model;
+        hideErr();
+        setBusy(true);
+        await doInfer(prompt, null, model);
+
+        // Read back the last assistant message (streamed into the DOM).
+        const assistants = document.querySelectorAll('.msg-assistant .msg-content');
+        const response = assistants.length ? assistants[assistants.length - 1].textContent : '';
+        const tokens = await fetchBalance();
+        return { ok: true, model, response, balanceTokens: tokens };
+      },
+    });
+
+    register({
+      name: 'view_history',
+      title: 'View conversation history',
+      description: 'Returns the signed-in user\'s saved conversation history on dox402 as an ordered list of { role, content } messages. Read-only.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true },
+      execute: async () => {
+        const gate = requireSession();
+        if (!gate.ok) return gate;
+        try {
+          const res = await fetch('/history', { cache: 'no-store' });
+          if (res.status === 401) { handleSessionExpired(); return { ok: false, error: 'Session expired.' }; }
+          if (!res.ok) return { ok: false, error: 'Server error ' + res.status };
+          const data = await res.json();
+          const history = (data.history || []).map(m => ({ role: m.role, content: m.content }));
+          return { ok: true, messages: history, count: history.length };
+        } catch (e) {
+          return { ok: false, error: e.message || String(e) };
+        }
+      },
+    });
+
+    register({
+      name: 'open_deposit_ui',
+      title: 'Open the deposit (top-up) panel',
+      description: 'Opens the dox402 top-up panel so the user can deposit USDC to buy tokens. This tool does NOT send any transaction and does NOT sign anything; the user must select an amount and click the button, then approve the USDC transfer in their wallet. Use this when the user\'s balance is too low to run inference.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          suggestedUsdc: { type: 'number', minimum: 0.001, description: 'Optional hint — pre-fills the custom amount field in USDC. The user still must confirm and sign.' },
+        },
+        additionalProperties: false,
+      },
+      execute: async (input) => {
+        const gate = requireSession();
+        if (!gate.ok) return gate;
+        const panel = document.getElementById('topupInline');
+        if (!panel.classList.contains('on')) toggleTopUp();
+        if (input && typeof input.suggestedUsdc === 'number' && input.suggestedUsdc > 0) {
+          const custom = document.getElementById('topupCustom');
+          if (custom) {
+            custom.value = String(input.suggestedUsdc);
+            onTopupCustomInput();
+          }
+        }
+        return { ok: true, message: 'Deposit panel opened. The user must confirm the amount and approve the USDC transfer in their wallet — this tool does not auto-spend.' };
+      },
+    });
+  })();
 </script>
 
 
