@@ -222,7 +222,7 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
     // get a 404 from the catch-all below.
     if (
       (url.pathname === '/' || url.pathname === '/index.html') &&
-      request.method === 'GET' &&
+      (request.method === 'GET' || request.method === 'HEAD') &&
       env.ASSETS
     ) {
       const assetResponse = await env.ASSETS.fetch(request);
