@@ -165,4 +165,5 @@ export interface Env {
   ADMIN_SECRET?: string;        // admin Bearer token (set via wrangler secret put)
   ANALYTICS?: AnalyticsEngineDataset; // Cloudflare Analytics Engine — fire-and-forget event tracking
   RAG_STORAGE: R2Bucket;              // R2 bucket for RAG document content storage
+  ASSETS: Fetcher;                    // Cloudflare Workers Assets binding — serves files in ./public
 }

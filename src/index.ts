@@ -170,7 +170,43 @@ export default {
   },
 };
 
+// RFC 8288 Link headers advertising machine-readable specs alongside the HTML homepage.
+// Crawlers and agents can discover OpenAPI / agent cards / SKILL.md without parsing HTML.
+const HOMEPAGE_LINK_HEADER = [
+  '</openapi.json>; rel="service-desc"; type="application/json"',
+  '</.well-known/agent.json>; rel="describedby"; type="application/json"',
+  '</.well-known/agents.json>; rel="describedby"; type="application/json"',
+  '</SKILL.md>; rel="service-doc"; type="text/markdown"',
+].join(', ');
+
 async function handleRequest(request: Request, env: Env, url: URL): Promise<Response> {
+    // ── Homepage with Link headers ───────────────────────────────────────
+    // Intercept GET / when the client wants HTML so we can attach RFC 8288
+    // Link headers pointing at machine-readable specs. All other asset paths
+    // (openapi.json, robots.txt, sitemap.xml, etc.) fall through to Cloudflare
+    // Workers Assets via the platform's normal asset-first routing.
+    if (
+      (url.pathname === '/' || url.pathname === '/index.html') &&
+      request.method === 'GET' &&
+      (request.headers.get('Accept')?.includes('text/html') ?? false) &&
+      env.ASSETS
+    ) {
+      const assetResponse = await env.ASSETS.fetch(request);
+      const contentType = assetResponse.headers.get('Content-Type') ?? '';
+      // Only attach Link headers to HTML responses — never to redirects,
+      // 404 fallbacks, or anything the assets layer chose to serve as non-HTML.
+      if (assetResponse.ok && contentType.toLowerCase().includes('text/html')) {
+        const headers = new Headers(assetResponse.headers);
+        headers.set('Link', HOMEPAGE_LINK_HEADER);
+        return new Response(assetResponse.body, {
+          status: assetResponse.status,
+          statusText: assetResponse.statusText,
+          headers,
+        });
+      }
+      return assetResponse;
+    }
+
     // ── Public endpoints ─────────────────────────────────────────────────
 
     // GET /health — liveness probe
